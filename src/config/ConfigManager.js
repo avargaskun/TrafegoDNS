@@ -30,6 +30,7 @@ class ConfigManager {
     // Cloudflare settings
     this.cloudflareToken = EnvironmentLoader.getSecret('CLOUDFLARE_TOKEN');
     this.cloudflareZone = EnvironmentLoader.getString('CLOUDFLARE_ZONE');
+    this.cloudflareAccountId = EnvironmentLoader.getString('CLOUDFLARE_ACCOUNT_ID');
     
     // Route53 settings
     this.route53AccessKey = EnvironmentLoader.getSecret('ROUTE53_ACCESS_KEY');

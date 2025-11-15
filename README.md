@@ -202,6 +202,7 @@ services:
       # Cloudflare settings (if using Cloudflare)
       - CLOUDFLARE_TOKEN=your_cloudflare_api_token
       - CLOUDFLARE_ZONE=example.com
+      - CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
       
       # DigitalOcean settings (if using DigitalOcean)
       - DO_TOKEN=your_digitalocean_api_token
@@ -279,7 +280,7 @@ services:
 
 ### Cloudflare
 
-Cloudflare requires an API token with DNS edit permissions for your zone:
+Cloudflare requires an API token with DNS edit permissions for your zone. If you want to use the Cloudflare Tunnel integration, the token also needs `Account.Cloudflare Tunnel` read/write permissions.
 
 ```yaml
 environment:
@@ -292,6 +293,33 @@ Cloudflare-specific features:
 - Proxying (orange cloud) through `dns.proxied` or `dns.cloudflare.proxied` labels
 - Ultra-low TTL support (as low as 1 second)
 - Automatic handling of apex domains
+- Cloudflare Tunnel integration for ZeroTrust tunnels
+
+### Cloudflare Tunnel Integration
+
+TrafegoDNS can automatically create and manage DNS records for Cloudflare ZeroTrust tunnels. To enable this, add the following labels to your container:
+
+| Label | Description |
+|---|---|
+| `dns.cloudflare.tunnel.name` | The name of the Cloudflare tunnel |
+| `dns.cloudflare.tunnel.url` | The URL of the service to expose through the tunnel |
+
+When these labels are detected, TrafegoDNS will:
+1. Find the tunnel by name in your Cloudflare account.
+2. Add or update the ingress rules for the tunnel to route traffic to the specified service URL.
+3. Automatically create the CNAME record for the hostname.
+
+**Example:**
+```yaml
+services:
+  my-app:
+    image: my-image
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.my-app.rule=Host(`app.example.com`)"
+      - "dns.cloudflare.tunnel.name=my-tunnel"
+      - "dns.cloudflare.tunnel.url=http://my-app:8080"
+```
 
 ### DigitalOcean
 
@@ -605,6 +633,7 @@ services:
 |----------|-------------|---------|----------|
 | `CLOUDFLARE_TOKEN` | Cloudflare API token with DNS edit permissions | - | Yes |
 | `CLOUDFLARE_ZONE` | Your domain name (e.g., example.com) | - | Yes |
+| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID | - | Yes |
 
 ### DigitalOcean Settings
 | Variable | Description | Default | Required if using DigitalOcean |

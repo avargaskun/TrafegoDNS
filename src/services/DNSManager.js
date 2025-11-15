@@ -65,6 +65,15 @@ class DNSManager {
       const { hostnames, containerLabels } = data;
       await this.processHostnames(hostnames, containerLabels);
     });
+
+    this.eventBus.subscribe(EventTypes.DOCKER_CONTAINER_STOPPED, async (data) => {
+      if (this.config.cleanupOrphaned) {
+        const { containerId, containerName } = data;
+        // Since we don't have the labels anymore, we can't get the tunnel name
+        // This will be handled by the cleanupOrphanedRecords method
+        logger.info(`Container ${containerName} stopped. Orphaned tunnel ingress rules will be cleaned up on the next poll.`);
+      }
+    });
   }
   
   /**
@@ -136,16 +145,29 @@ class DNSManager {
           // Create fully qualified domain name
           const fqdn = this.ensureFqdn(hostname, this.config.getProviderDomain());
           processedHostnames.push(fqdn);
-          
-          // Extract DNS configuration
-          const recordConfig = extractDnsConfigFromLabels(
-            labels, 
-            this.config,
-            fqdn
-          );
-          
-          // Add to batch instead of processing immediately
-          dnsRecordConfigs.push(recordConfig);
+
+          // Check for Cloudflare tunnel labels
+          const tunnelName = labels['dns.cloudflare.tunnel.name'];
+          const tunnelUrl = labels['dns.cloudflare.tunnel.url'];
+
+          if (tunnelName && tunnelUrl) {
+            if (this.config.dnsProvider === 'cloudflare') {
+              logger.info(`Found Cloudflare tunnel configuration for ${hostname}: tunnel=${tunnelName}, url=${tunnelUrl}`);
+              await this.dnsProvider.updateTunnel(tunnelName, tunnelUrl, fqdn);
+            } else {
+              logger.warn(`Cloudflare tunnel labels found for ${hostname}, but the DNS provider is not Cloudflare. Ignoring.`);
+            }
+          } else {
+            // Extract DNS configuration
+            const recordConfig = extractDnsConfigFromLabels(
+              labels,
+              this.config,
+              fqdn
+            );
+
+            // Add to batch instead of processing immediately
+            dnsRecordConfigs.push(recordConfig);
+          }
           
         } catch (error) {
           this.stats.errors++;
@@ -184,6 +206,9 @@ class DNSManager {
       // Cleanup orphaned records if configured
       if (this.config.cleanupOrphaned && processedHostnames.length > 0) {
         await this.cleanupOrphanedRecords(processedHostnames);
+        if (this.config.dnsProvider === 'cloudflare') {
+          await this.cleanupOrphanedTunnels(processedHostnames);
+        }
       }
       
       // Publish event with results
@@ -535,6 +560,29 @@ class DNSManager {
         logger.success(`Successfully processed ${processedRecords.length} managed hostnames`);
       } catch (error) {
         logger.error(`Error batch processing managed hostnames: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Clean up orphaned tunnel ingress rules
+   */
+  async cleanupOrphanedTunnels(activeHostnames) {
+    logger.debug('Checking for orphaned tunnel ingress rules...');
+    const allTunnels = await this.dnsProvider.tunnelManager.client.get('/cfd_tunnel');
+    if (!allTunnels.data.result) {
+      return;
+    }
+
+    for (const tunnel of allTunnels.data.result) {
+      const configResponse = await this.dnsProvider.tunnelManager.client.get(`/cfd_tunnel/${tunnel.id}/configurations`);
+      const currentIngress = configResponse.data.result.config.ingress;
+      const orphanedIngress = currentIngress.filter(rule => !activeHostnames.includes(rule.hostname) && rule.hostname.endsWith(this.config.getProviderDomain()));
+
+      if (orphanedIngress.length > 0) {
+        const updatedIngress = currentIngress.filter(rule => !orphanedIngress.some(orphan => orphan.hostname === rule.hostname));
+        logger.info(`Removing ${orphanedIngress.length} orphaned ingress rules from tunnel ${tunnel.name}`);
+        await this.dnsProvider.tunnelManager.updateTunnelIngress(tunnel.id, updatedIngress);
       }
     }
   }

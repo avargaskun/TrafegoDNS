@@ -280,6 +280,11 @@ class DockerMonitor {
             if (proxiedLabel === 'false') {
               logger.info(`⚠️ Container ${name} has proxied=false label - will disable Cloudflare proxy`);
             }
+
+          const tunnelNameLabel = getLabelValue(labels, genericPrefix, providerPrefix, 'cloudflare.tunnel.name', null);
+          if (tunnelNameLabel) {
+            logger.info(`Container ${name} has Cloudflare tunnel label: ${tunnelNameLabel}`);
+          }
             
             const skipLabel = getLabelValue(labels, genericPrefix, providerPrefix, 'skip', null);
             if (skipLabel === 'true') {
