@@ -7,6 +7,7 @@ const DNSProvider = require('../base');
 const logger = require('../../utils/logger');
 const { convertToCloudflareFormat } = require('./converter');
 const { validateRecord } = require('./validator');
+const CloudflareTunnelManager = require('./tunnels');
 
 class CloudflareProvider extends DNSProvider {
   constructor(config) {
@@ -16,6 +17,7 @@ class CloudflareProvider extends DNSProvider {
     
     this.token = config.cloudflareToken;
     this.zone = config.cloudflareZone;
+    this.tunnelManager = new CloudflareTunnelManager(config);
     this.zoneId = null;
     
     // Initialize Axios client
@@ -617,6 +619,41 @@ recordNeedsUpdate(existing, newRecord) {
     
     logger.trace(`CloudflareProvider.recordNeedsUpdate: Final result - needs update: ${needsUpdate}`);
     return needsUpdate;
+  }
+
+  /**
+   * Update a Cloudflare tunnel's ingress rules
+   */
+  async updateTunnel(tunnelName, serviceUrl, hostname) {
+    logger.debug(`Updating tunnel ${tunnelName} for ${hostname} to ${serviceUrl}`);
+    const tunnel = await this.tunnelManager.findTunnelByName(tunnelName);
+    if (!tunnel) {
+      logger.error(`Tunnel ${tunnelName} not found.`);
+      return;
+    }
+
+    const newRule = {
+      hostname,
+      service: serviceUrl,
+    };
+
+    const configResponse = await this.tunnelManager.client.get(`/cfd_tunnel/${tunnel.id}/configurations`);
+    const currentIngress = configResponse.data.result.config.ingress;
+    const existingRuleIndex = currentIngress.findIndex(rule => rule.hostname === hostname);
+
+    let updatedIngress = [...currentIngress];
+    if (serviceUrl) {
+        if (existingRuleIndex !== -1) {
+            updatedIngress[existingRuleIndex] = newRule;
+        } else {
+            updatedIngress.push(newRule);
+        }
+    } else if (this.config.cleanupOrphaned && existingRuleIndex !== -1) {
+        updatedIngress.splice(existingRuleIndex, 1);
+    }
+
+    await this.tunnelManager.updateTunnelIngress(tunnel.id, updatedIngress);
+    logger.success(`Successfully updated tunnel ${tunnelName} for ${hostname}`);
   }
 }
 
