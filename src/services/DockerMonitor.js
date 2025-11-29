@@ -3,6 +3,8 @@
  * Responsible for monitoring Docker container events
  */
 const Docker = require('dockerode');
+const { parser } = require('stream-json/Parser');
+const { streamValues } = require('stream-json/streamers/StreamValues');
 const logger = require('../utils/logger');
 const EventTypes = require('../events/EventTypes');
 const { getLabelValue } = require('../utils/dns');
@@ -78,98 +80,69 @@ class DockerMonitor {
    */
   setupEventListeners() {
     if (!this.events) return;
-    
-    this.events.on('data', (data) => {
-      try {
-        // More robust JSON parsing with fallbacks
-        let event;
-        const rawData = data.toString();
-        
+
+    const jsonStream = this.events
+      .pipe(parser({ jsonStreaming: true }))
+      .pipe(streamValues())
+      .on('data', (data) => {
+        const event = data.value;
+
         try {
-          // First attempt: Standard parsing
-          event = JSON.parse(rawData);
-        } catch (parseError) {
-          logger.debug(`Initial JSON parse failed: ${parseError.message}. Attempting cleanup...`);
-          
-          try {
-            // Second attempt: Trim and sanitize common control characters
-            const sanitizedData = rawData.trim().replace(/[\u0000-\u0019]+/g, "");
-            event = JSON.parse(sanitizedData);
-            logger.debug('Parsed JSON after basic sanitization');
-          } catch (sanitizeError) {
-            // Third attempt: Try to find and parse valid JSON within the stream
-            try {
-              // Look for something that might be a complete JSON object
-              const match = rawData.match(/\{.*\}/);
-              if (match) {
-                event = JSON.parse(match[0]);
-                logger.debug('Parsed JSON after extracting from stream');
-              } else {
-                throw new Error(`Could not extract valid JSON: ${sanitizeError.message}`);
+          // Now that we have a valid event object, process it
+          if (
+            event.Type === 'container' &&
+            ['start', 'stop', 'die', 'destroy'].includes(event.status)
+          ) {
+            const containerName = event.Actor.Attributes.name || 'unknown';
+            logger.debug(`Docker ${event.status} event detected for ${containerName}`);
+
+            // Publish Docker event
+            this.eventBus.publish(
+              event.status === 'start'
+                ? EventTypes.DOCKER_CONTAINER_STARTED
+                : EventTypes.DOCKER_CONTAINER_STOPPED,
+              {
+                containerId: event.Actor.ID,
+                containerName,
+                status: event.status
               }
-            } catch (extractError) {
-              throw new Error(`Failed to parse Docker event: ${parseError.message}`);
+            );
+
+            // Prevent too frequent updates by checking time since last event
+            const now = Date.now();
+            if (now - this.lastEventTime < 3000) {
+              logger.debug('Skipping Docker event processing (rate limiting)');
+              return;
             }
+
+            this.lastEventTime = now;
+
+            // Wait a moment for Traefik to update its routers
+            setTimeout(async () => {
+              // Update container labels cache
+              await this.updateContainerLabelsCache();
+
+              // Publish labels updated event
+              this.eventBus.publish(EventTypes.DOCKER_LABELS_UPDATED, {
+                containerLabelsCache: this.containerLabelsCache,
+                containerIdToName: this.containerIdToName,
+                triggerContainer: containerName
+              });
+            }, 3000);
           }
+        } catch (error) {
+          logger.error(`Error processing parsed Docker event: ${error.message}`);
         }
-        
-        // Now that we have a valid event object, process it
-        if (
-          event.Type === 'container' && 
-          ['start', 'stop', 'die', 'destroy'].includes(event.status)
-        ) {
-          const containerName = event.Actor.Attributes.name || 'unknown';
-          logger.debug(`Docker ${event.status} event detected for ${containerName}`);
-          
-          // Publish Docker event
-          this.eventBus.publish(
-            event.status === 'start' 
-              ? EventTypes.DOCKER_CONTAINER_STARTED 
-              : EventTypes.DOCKER_CONTAINER_STOPPED,
-            {
-              containerId: event.Actor.ID,
-              containerName,
-              status: event.status
-            }
-          );
-          
-          // Prevent too frequent updates by checking time since last event
-          const now = Date.now();
-          if (now - this.lastEventTime < 3000) {
-            logger.debug('Skipping Docker event processing (rate limiting)');
-            return;
-          }
-          
-          this.lastEventTime = now;
-          
-          // Wait a moment for Traefik to update its routers
-          setTimeout(async () => {
-            // Update container labels cache
-            await this.updateContainerLabelsCache();
-            
-            // Publish labels updated event
-            this.eventBus.publish(EventTypes.DOCKER_LABELS_UPDATED, {
-              containerLabelsCache: this.containerLabelsCache,
-              containerIdToName: this.containerIdToName,
-              triggerContainer: containerName
-            });
-          }, 3000);
-        }
-      } catch (error) {
-        logger.error(`Error processing Docker event: ${error.message}`);
-        // Log additional debug info but avoid logging sensitive data
-        logger.debug(`Event data type: ${typeof data}, length: ${data ? data.length : 0}`);
-      }
-    });
-    
-    this.events.on('error', (error) => {
-      logger.error(`Docker event stream error: ${error.message}`);
+      });
+
+    jsonStream.on('error', (error) => {
+      logger.error(`Docker event stream or JSON parsing error: ${error.message}`);
       
       // Try to reconnect after a delay
       this.stopWatching();
       setTimeout(() => this.startWatching(), 10000);
     });
-    
+
     logger.debug('Docker event listeners set up');
   }
   
