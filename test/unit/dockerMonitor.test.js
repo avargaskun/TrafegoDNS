@@ -32,24 +32,90 @@ function hangUntilAborted(opts) {
   });
 }
 
+const FAST_TIMINGS = {
+  eventDebounceMs: 40,
+  eventDebounceMaxMs: 200,
+  reconnectInitialMs: 20,
+  reconnectMaxMs: 50,
+  stableConnectionMs: 1000,
+  connectTimeoutMs: 500,
+  refreshTimeoutMs: 500
+};
+
+function openStream(state) {
+  const stream = new PassThrough();
+  state.streams.push(stream);
+  return stream;
+}
+
 function createHarness({ timings } = {}) {
   const bus = new EventBus();
   const published = [];
-  bus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => published.push(data));
-  const state = { listCalls: [], respond: async () => [] };
+  const timeline = [];
+  bus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => {
+    published.push(data);
+    timeline.push(`labels:${data.trigger}`);
+  });
+  const started = [];
+  const stopped = [];
+  bus.subscribe(EventTypes.DOCKER_CONTAINER_STARTED, (data) => {
+    started.push(data);
+    timeline.push('started');
+  });
+  bus.subscribe(EventTypes.DOCKER_CONTAINER_STOPPED, (data) => {
+    stopped.push(data);
+    timeline.push('stopped');
+  });
+  const state = {
+    listCalls: [],
+    respond: async () => [],
+    eventsCalls: [],
+    streams: [],
+    events: async () => openStream(state)
+  };
   const docker = {
     listContainers: (opts) => {
       state.listCalls.push(opts);
       return state.respond(opts);
     },
-    getEvents: async () => new PassThrough()
+    getEvents: (opts) => {
+      state.eventsCalls.push(opts);
+      return state.events(opts);
+    }
   };
   const monitor = new DockerMonitor(makeConfig(), bus, { docker, timings, random: () => 0.5 });
-  return { monitor, published, state };
+  return { monitor, published, started, stopped, timeline, state };
 }
 
 function linesContaining(entries, text) {
   return entries.filter((entry) => entry.text.includes(text));
+}
+
+function containerEvent(action, name, id) {
+  return {
+    Type: 'container',
+    Action: action,
+    Actor: { ID: id, Attributes: { name, image: `ghcr.io/example/${name}:1.0` } },
+    scope: 'local',
+    time: 1757664000,
+    timeNano: 1757664000000000000
+  };
+}
+
+function writeEvent(stream, event) {
+  stream.write(`${JSON.stringify(event)}\n`);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function refusedError() {
+  return Object.assign(new Error('connect ECONNREFUSED /var/run/docker.sock'), {
+    code: 'ECONNREFUSED',
+    syscall: 'connect',
+    address: '/var/run/docker.sock'
+  });
 }
 
 test('DEFAULT_TIMINGS holds the design defaults and is exported on the module', () => {
@@ -224,4 +290,212 @@ test('startWatching refreshes labels with trigger boot', async (t) => {
 
   assert.deepEqual(published.map((payload) => payload.trigger), ['boot']);
   assert.equal(monitor.hasLoadedLabels(), true);
+});
+
+test('startWatching subscribes to container events without an event filter, since or API pin, then re-lists', async (t) => {
+  const { entries } = captureLogs(t);
+  const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
+  let eventsCallsAtList = null;
+  state.respond = async () => {
+    eventsCallsAtList = state.eventsCalls.length;
+    return [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  };
+  t.after(() => monitor.stopWatching());
+
+  await monitor.startWatching();
+  await monitor.startWatching();
+
+  assert.equal(eventsCallsAtList, 1, 'the event stream is opened before the re-list');
+  assert.equal(state.eventsCalls.length, 1);
+  assert.deepEqual(Object.keys(state.eventsCalls[0]).sort(), ['abortSignal', 'filters']);
+  assert.deepEqual(state.eventsCalls[0].filters, { type: ['container'] });
+  assert.ok(state.eventsCalls[0].abortSignal instanceof AbortSignal);
+  assert.equal(state.listCalls.length, 1);
+  const successLines = linesContaining(entries, 'Docker event monitoring started successfully');
+  assert.equal(successLines.length, 1);
+  assert.equal(successLines[0].level, 'INFO');
+});
+
+test('five start events inside the debounce window lead to exactly one event refresh', async (t) => {
+  captureLogs(t);
+  const { monitor, published, started, state } = createHarness({
+    timings: { ...FAST_TIMINGS, eventDebounceMs: 50, eventDebounceMaxMs: 500 }
+  });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+  assert.equal(state.listCalls.length, 1);
+
+  for (let i = 0; i < 5; i++) writeEvent(state.streams[0], containerEvent('start', 'app', APP_ID));
+
+  await waitFor(() => published.some((payload) => payload.trigger === 'event'), 2000, 'the event refresh');
+  await sleep(150);
+  assert.equal(started.length, 5);
+  assert.equal(state.listCalls.length, 2);
+  assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'event']);
+});
+
+test('events arriving every eventDebounceMs / 2 still refresh within eventDebounceMaxMs', async (t) => {
+  captureLogs(t);
+  const timings = { ...FAST_TIMINGS, eventDebounceMs: 100, eventDebounceMaxMs: 250 };
+  const { monitor, published, timeline, state } = createHarness({ timings });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+
+  const firstEventAt = Date.now();
+  writeEvent(state.streams[0], containerEvent('start', 'app', APP_ID));
+  const storm = setInterval(() => writeEvent(state.streams[0], containerEvent('start', 'app', APP_ID)), timings.eventDebounceMs / 2);
+  t.after(() => clearInterval(storm));
+
+  await waitFor(() => published.some((payload) => payload.trigger === 'event'), 2000, 'the capped event refresh');
+  const elapsed = Date.now() - firstEventAt;
+  clearInterval(storm);
+
+  const eventsBeforeRefresh = timeline.slice(0, timeline.indexOf('labels:event')).filter((entry) => entry === 'started').length;
+  assert.ok(eventsBeforeRefresh >= 4, `${eventsBeforeRefresh} events kept resetting the debounce`);
+  assert.ok(elapsed <= timings.eventDebounceMaxMs + 200, `refresh after ${elapsed} ms`);
+});
+
+test('handleEvent logs and publishes handled actions and ignores exec noise', (t) => {
+  const { entries } = captureLogs(t, 'TRACE');
+  const { monitor, started, stopped } = createHarness();
+  const NEW_ID = 'd4'.repeat(32);
+
+  monitor.handleEvent(containerEvent('start', 'newapp', NEW_ID));
+
+  const startLines = linesContaining(entries, 'Docker event start newapp');
+  assert.equal(startLines.length, 1);
+  assert.equal(startLines[0].level, 'INFO');
+  assert.deepEqual(started, [{ containerId: NEW_ID, containerName: 'newapp', status: 'start' }]);
+
+  const before = entries.length;
+  monitor.handleEvent(containerEvent('exec_create: sh -c true', 'newapp', NEW_ID));
+  monitor.handleEvent(containerEvent('exec_start: sh -c true', 'newapp', NEW_ID));
+  monitor.handleEvent(containerEvent('exec_die', 'newapp', NEW_ID));
+  monitor.handleEvent(containerEvent('health_status: unhealthy', 'newapp', NEW_ID));
+  monitor.handleEvent({ Type: 'network', Action: 'connect', Actor: { ID: 'n1', Attributes: { name: 'bridge' } } });
+  assert.equal(entries.slice(before).filter((entry) => entry.level !== 'TRACE').length, 0);
+  assert.equal(entries.filter((entry) => entry.text.includes('exec_')).length, 0);
+  assert.equal(started.length, 1);
+  assert.equal(stopped.length, 0);
+
+  for (const action of ['stop', 'die', 'destroy']) monitor.handleEvent(containerEvent(action, 'newapp', NEW_ID));
+  monitor.handleEvent(containerEvent('health_status: healthy', 'newapp', NEW_ID));
+
+  assert.deepEqual(stopped.map((payload) => payload.status), ['stop', 'die', 'destroy']);
+  assert.ok(stopped.every((payload) => payload.containerId === NEW_ID && payload.containerName === 'newapp'));
+  assert.equal(started.length, 1);
+  assert.equal(linesContaining(entries, 'Docker event health_status: healthy newapp').length, 1);
+});
+
+test('when getEvents is refused, startWatching resolves, WARNs once and keeps retrying', async (t) => {
+  const { entries, lines } = captureLogs(t);
+  const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
+  state.events = async () => {
+    throw refusedError();
+  };
+  t.after(() => monitor.stopWatching());
+
+  await assert.doesNotReject(monitor.startWatching());
+  await waitFor(() => state.eventsCalls.length >= 3, 2000, 'two more getEvents attempts');
+
+  const warns = entries.filter((entry) => entry.level === 'WARN');
+  assert.equal(warns.length, 1);
+  assert.match(
+    warns[0].text,
+    /Docker is unreachable \(connect ECONNREFUSED \/var\/run\/docker\.sock code=ECONNREFUSED\); continuing and retrying in the background$/
+  );
+  const attempts = linesContaining(entries, 'Docker event stream reconnect attempt');
+  assert.ok(attempts.length >= 2);
+  assert.ok(attempts.every((entry) => entry.level === 'DEBUG'));
+  assert.match(attempts[0].text, /reconnect attempt 1 in 15 ms \(connect ECONNREFUSED/);
+  assert.equal(entries.filter((entry) => entry.level === 'ERROR').length, 0);
+  assert.equal(state.listCalls.length, 0);
+  assert.equal(monitor.hasLoadedLabels(), false);
+  assert.equal(lines.filter((line) => line.includes('started successfully')).length, 0);
+});
+
+test('stopWatching cancels pending reconnects and debounces, and a restart still refreshes on events', async (t) => {
+  const { entries } = captureLogs(t);
+  const timings = { ...FAST_TIMINGS, eventDebounceMs: 200, eventDebounceMaxMs: 400 };
+  const { monitor, published, state } = createHarness({ timings });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+
+  writeEvent(state.streams[0], containerEvent('start', 'app', APP_ID));
+  await waitFor(() => linesContaining(entries, 'Docker event start app').length === 1, 2000, 'the start event');
+  const openStreamOk = state.events;
+  state.events = async () => {
+    throw refusedError();
+  };
+  state.streams[0].end();
+  await waitFor(() => linesContaining(entries, 'reconnect attempt').length >= 1, 2000, 'a scheduled reconnect');
+  assert.equal(state.listCalls.length, 1, 'the debounce is still pending');
+
+  monitor.stopWatching();
+  const eventsCallsAtStop = state.eventsCalls.length;
+  await sleep(Math.max(3 * timings.reconnectMaxMs, timings.eventDebounceMaxMs) + 100);
+
+  assert.equal(state.eventsCalls.length, eventsCallsAtStop);
+  assert.equal(state.listCalls.length, 1);
+  assert.deepEqual(published.map((payload) => payload.trigger), ['boot']);
+
+  state.events = openStreamOk;
+  await monitor.startWatching();
+  assert.equal(state.listCalls.length, 2);
+  writeEvent(state.streams.at(-1), containerEvent('start', 'app', APP_ID));
+
+  await waitFor(() => published.some((payload) => payload.trigger === 'event'), 2000, 'an event refresh after the restart');
+  assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'boot', 'event']);
+});
+
+test('a stream that dies during its re-list is not a recovery', async (t) => {
+  const { entries } = captureLogs(t);
+  const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
+  const lists = [];
+  state.respond = () => {
+    const pending = deferred();
+    lists.push(pending);
+    return pending.promise;
+  };
+  t.after(() => monitor.stopWatching());
+  const containers = [dockerContainer(APP_ID, 'app', APP_LABELS)];
+
+  const booted = monitor.startWatching();
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await waitFor(
+      () => state.streams.length === cycle + 1 && lists.length === cycle + 1,
+      2000,
+      `connection ${cycle + 1} and its re-list`
+    );
+    state.streams[cycle].end();
+    await waitFor(
+      () => linesContaining(entries, 'reconnect attempt').length === cycle + 1,
+      2000,
+      `reconnect ${cycle + 1} to be scheduled`
+    );
+    lists[cycle].resolve(containers);
+  }
+  await booted;
+  await waitFor(() => state.streams.length === 4 && lists.length === 4, 2000, 'the fourth connection and its re-list');
+
+  assert.equal(linesContaining(entries, 'reconnected').length, 0);
+  const warns = entries.filter((entry) => entry.level === 'WARN');
+  assert.equal(warns.length, 1);
+  assert.match(warns[0].text, /Docker event stream ended; reconnecting$/);
+
+  lists[3].resolve(containers);
+  await waitFor(() => linesContaining(entries, 'reconnected').length === 1, 2000, 'the reconnect INFO line');
+
+  const reconnected = linesContaining(entries, 'Docker event stream reconnected');
+  assert.equal(reconnected.length, 1);
+  assert.equal(reconnected[0].level, 'INFO');
+  assert.match(
+    reconnected[0].text,
+    /Docker event stream reconnected after 3 attempt\(s\); re-listed 1 running containers \(trigger=reconnect\)$/
+  );
+  assert.equal(entries.filter((entry) => entry.level === 'WARN').length, 1);
+  assert.equal(linesContaining(entries, 'started successfully').length, 0);
 });

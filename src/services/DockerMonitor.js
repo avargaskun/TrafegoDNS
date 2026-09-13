@@ -3,12 +3,13 @@
  * Responsible for monitoring Docker container events
  */
 const Docker = require('dockerode');
+const { pipeline, Writable } = require('stream');
 const { parser } = require('stream-json/Parser');
 const { streamValues } = require('stream-json/streamers/StreamValues');
 const logger = require('../utils/logger');
 const EventTypes = require('../events/EventTypes');
 const { getLabelValue, extractDnsLabels } = require('../utils/dns');
-const { describeError } = require('../utils/errors');
+const { describeError, runGuarded } = require('../utils/errors');
 const { SingleFlight } = require('../utils/singleFlight');
 
 const DEFAULT_TIMINGS = Object.freeze({
@@ -21,8 +22,29 @@ const DEFAULT_TIMINGS = Object.freeze({
   refreshTimeoutMs: 15000
 });
 
+const HANDLED_ACTIONS = new Set(['start', 'stop', 'die', 'destroy', 'health_status: healthy']);
+const STOP_ACTIONS = new Set(['stop', 'die', 'destroy']);
+
+function computeBackoffDelay(attempt, { reconnectInitialMs, reconnectMaxMs }, random = Math.random) {
+  const base = Math.min(reconnectMaxMs, reconnectInitialMs * 2 ** attempt);
+  return Math.round(base / 2 + random() * (base / 2));
+}
+
 class DockerMonitor {
   static DEFAULT_TIMINGS = DEFAULT_TIMINGS;
+
+  static classifyEvent(event) {
+    if (!event || event.Type !== 'container') return null;
+    // `status` is the pre-1.52 field; API 1.52+ only sends `Action`.
+    const action = typeof event.Action === 'string' ? event.Action : event.status;
+    // Exact match: exec_* and other health states carry suffixes.
+    if (!HANDLED_ACTIONS.has(action)) return null;
+    return {
+      action,
+      id: event.Actor?.ID ?? event.id ?? null,
+      name: event.Actor?.Attributes?.name ?? 'unknown'
+    };
+  }
 
   constructor(config, eventBus, options = {}) {
     this.config = config;
@@ -30,9 +52,6 @@ class DockerMonitor {
     this.docker = options.docker ?? new Docker({ socketPath: config.dockerSocket });
     this.timings = { ...DockerMonitor.DEFAULT_TIMINGS, ...options.timings };
     this.random = options.random ?? Math.random;
-    
-    // Track last event time to prevent duplicate polling
-    this.lastEventTime = 0;
     
     // Global cache for container labels
     this.containerLabelsCache = {};
@@ -45,113 +64,139 @@ class DockerMonitor {
     this.refreshFailing = false;
     this.refreshRunner = new SingleFlight((trigger) => this.runRefresh(trigger));
 
-    // Event stream reference
-    this.events = null;
+    this.stopped = true;
+    this.generation = 0;
+    this.stream = null;
+    this.abortController = null;
+    this.reconnectTimer = null;
+    this.debounceTimer = null;
+    this.firstEventAt = 0;
+    this.reconnectAttempt = 0;
+    this.streamOutage = null;
+    this.connectedAt = 0;
   }
   
   /**
-   * Start watching Docker events
+   * Start watching Docker events; never rejects, retries in the background
    */
   async startWatching() {
-    try {
-      await this.refreshLabels('boot');
-      
-      logger.debug('Starting Docker event monitoring...');
-      
-      // Get the event stream
-      this.events = await this.getEvents();
-      
-      // Set up event listeners
-      this.setupEventListeners();
-      
-      logger.success('Docker event monitoring started successfully');
-      return true;
-    } catch (error) {
-      logger.error(`Failed to start Docker monitoring: ${error.message}`);
-      
-      // Try to reconnect after a delay
-      setTimeout(() => this.startWatching(), 10000);
-      
-      throw error;
-    }
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.streamOutage = null;
+    this.reconnectAttempt = 0;
+    logger.debug('Starting Docker event monitoring...');
+    await this.connect('boot');
   }
   
   /**
    * Stop watching Docker events
    */
   stopWatching() {
-    if (this.events) {
-      try {
-        this.events.destroy();
-        this.events = null;
-        logger.debug('Docker event monitoring stopped');
-      } catch (error) {
-        logger.error(`Error stopping Docker event monitoring: ${error.message}`);
+    this.stopped = true;
+    this.generation++;
+    clearTimeout(this.reconnectTimer);
+    clearTimeout(this.debounceTimer);
+    // A stale debounceTimer would make scheduleEventRefresh() return early after a restart.
+    this.reconnectTimer = null;
+    this.debounceTimer = null;
+    this.abortController?.abort();
+    this.abortController = null;
+    this.stream?.destroy();
+    this.stream = null;
+    logger.debug('Docker event monitoring stopped');
+  }
+
+  async connect(trigger) {
+    const gen = ++this.generation;
+    const abortController = new AbortController();
+    this.abortController = abortController;
+    const connectTimer = setTimeout(() => abortController.abort(), this.timings.connectTimeoutMs);
+    let source;
+    try {
+      source = await this.getEvents({ filters: { type: ['container'] }, abortSignal: abortController.signal });
+    } catch (error) {
+      clearTimeout(connectTimer);
+      if (gen === this.generation) this.handleStreamClosed(gen, error, { connected: false, trigger });
+      return;
+    }
+    clearTimeout(connectTimer);
+    if (gen !== this.generation || this.stopped) {
+      source.destroy();
+      return;
+    }
+
+    this.stream = source;
+    this.connectedAt = Date.now();
+    const sink = new Writable({
+      objectMode: true,
+      write: (chunk, _encoding, callback) => {
+        runGuarded('Docker event handler', () => this.handleEvent(chunk.value));
+        callback();
       }
+    });
+    pipeline(source, parser({ jsonStreaming: true }), streamValues(), sink,
+      (error) => this.handleStreamClosed(gen, error, { connected: true, trigger }));
+
+    // Subscribe first, then re-list, so nothing that happens after the subscription is missed.
+    const result = await this.refreshLabels(trigger);
+    if (gen !== this.generation || this.stream !== source) return;
+    if (this.streamOutage) {
+      logger.info(`Docker event stream reconnected after ${this.streamOutage.attempts} attempt(s); re-listed ${result.containerCount ?? 'unknown'} running containers (trigger=${trigger})`);
+      this.streamOutage = null;
+    } else if (trigger === 'boot') {
+      logger.success('Docker event monitoring started successfully');
     }
   }
-  
-  /**
-   * Set up event listeners for Docker events
-   */
-  setupEventListeners() {
-    if (!this.events) return;
 
-    const jsonStream = this.events
-      .pipe(parser({ jsonStreaming: true }))
-      .pipe(streamValues())
-      .on('data', (data) => {
-        const event = data.value;
+  handleStreamClosed(gen, error, { connected, trigger }) {
+    if (gen !== this.generation || this.stopped) return;
+    this.stream = null;
+    if (connected && Date.now() - this.connectedAt >= this.timings.stableConnectionMs) {
+      this.reconnectAttempt = 0;
+    }
+    const reason = error ? describeError(error) : 'stream ended';
+    if (!this.streamOutage) {
+      this.streamOutage = { since: Date.now(), reason, attempts: 0 };
+      logger.warn(trigger === 'boot' && !connected
+        ? `Docker is unreachable (${reason}); continuing and retrying in the background`
+        : `Docker event stream ${error ? `error: ${reason}` : 'ended'}; reconnecting`);
+    }
+    const delay = computeBackoffDelay(this.reconnectAttempt++, this.timings, this.random);
+    this.streamOutage.attempts++;
+    logger.debug(`Docker event stream reconnect attempt ${this.reconnectAttempt} in ${delay} ms (${reason})`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      runGuarded('Docker reconnect', () => this.connect('reconnect'));
+    }, delay);
+  }
 
-        try {
-          // Now that we have a valid event object, process it
-          if (
-            event.Type === 'container' &&
-            ['start', 'stop', 'die', 'destroy'].includes(event.status)
-          ) {
-            const containerName = event.Actor.Attributes.name || 'unknown';
-            logger.debug(`Docker ${event.status} event detected for ${containerName}`);
+  handleEvent(value) {
+    const event = DockerMonitor.classifyEvent(value);
+    if (!event) return;
+    logger.info(`Docker event ${event.action} ${event.name}`);
+    const payload = { containerId: event.id, containerName: event.name, status: event.action };
+    if (event.action === 'start') {
+      this.eventBus.publish(EventTypes.DOCKER_CONTAINER_STARTED, payload);
+    } else if (STOP_ACTIONS.has(event.action)) {
+      this.eventBus.publish(EventTypes.DOCKER_CONTAINER_STOPPED, payload);
+    }
+    this.scheduleEventRefresh();
+  }
 
-            // Publish Docker event
-            this.eventBus.publish(
-              event.status === 'start'
-                ? EventTypes.DOCKER_CONTAINER_STARTED
-                : EventTypes.DOCKER_CONTAINER_STOPPED,
-              {
-                containerId: event.Actor.ID,
-                containerName,
-                status: event.status
-              }
-            );
-
-            // Prevent too frequent updates by checking time since last event
-            const now = Date.now();
-            if (now - this.lastEventTime < 3000) {
-              logger.debug('Skipping Docker event processing (rate limiting)');
-              return;
-            }
-
-            this.lastEventTime = now;
-
-            // Wait a moment for Traefik to update its routers
-            setTimeout(async () => {
-              await this.refreshLabels('event');
-            }, 3000);
-          }
-        } catch (error) {
-          logger.error(`Error processing parsed Docker event: ${error.message}`);
-        }
-      });
-
-    jsonStream.on('error', (error) => {
-      logger.error(`Docker event stream or JSON parsing error: ${error.message}`);
-      
-      // Try to reconnect after a delay
-      this.stopWatching();
-      setTimeout(() => this.startWatching(), 10000);
-    });
-
-    logger.debug('Docker event listeners set up');
+  scheduleEventRefresh() {
+    if (this.stopped) return;
+    const now = Date.now();
+    if (!this.debounceTimer) {
+      this.firstEventAt = now;
+    } else if (now - this.firstEventAt >= this.timings.eventDebounceMaxMs) {
+      return;
+    }
+    clearTimeout(this.debounceTimer);
+    const delay = Math.min(this.timings.eventDebounceMs, this.timings.eventDebounceMaxMs - (now - this.firstEventAt));
+    this.debounceTimer = setTimeout(() => runGuarded('Docker event refresh', async () => {
+      this.debounceTimer = null;
+      await this.refreshLabels('event');
+    }), delay);
   }
   
   // Never rejects: resolves to { ok: true, containerCount, changed } or { ok: false, error }.
@@ -448,3 +493,6 @@ class DockerMonitor {
 
 module.exports = DockerMonitor;
 module.exports.DEFAULT_TIMINGS = DEFAULT_TIMINGS;
+module.exports.HANDLED_ACTIONS = HANDLED_ACTIONS;
+module.exports.computeBackoffDelay = computeBackoffDelay;
+module.exports.classifyEvent = DockerMonitor.classifyEvent;
