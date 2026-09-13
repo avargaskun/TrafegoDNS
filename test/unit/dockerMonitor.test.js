@@ -397,6 +397,29 @@ test('handleEvent logs and publishes handled actions and ignores exec noise', (t
   assert.equal(linesContaining(entries, 'Docker event health_status: healthy newapp').length, 1);
 });
 
+test('health_status: healthy, stop, die and destroy each lead to an event refresh; unhealthy and exec_die do not', async (t) => {
+  captureLogs(t);
+  const { monitor, published, state } = createHarness({ timings: FAST_TIMINGS });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+  assert.equal(state.listCalls.length, 1);
+  const eventRefreshes = () => published.filter((payload) => payload.trigger === 'event').length;
+
+  for (const [index, action] of ['health_status: healthy', 'stop', 'die', 'destroy'].entries()) {
+    writeEvent(state.streams[0], containerEvent(action, 'app', APP_ID));
+    await waitFor(() => eventRefreshes() === index + 1, 2000, `the event refresh after ${action}`);
+    assert.equal(state.listCalls.length, index + 2);
+  }
+
+  writeEvent(state.streams[0], containerEvent('health_status: unhealthy', 'app', APP_ID));
+  writeEvent(state.streams[0], containerEvent('exec_die', 'app', APP_ID));
+  await sleep(FAST_TIMINGS.eventDebounceMaxMs + 100);
+
+  assert.equal(state.listCalls.length, 5);
+  assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'event', 'event', 'event', 'event']);
+});
+
 test('when getEvents is refused, startWatching resolves, WARNs once and keeps retrying', async (t) => {
   const { entries, lines } = captureLogs(t);
   const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
