@@ -4,7 +4,7 @@
 > **Date:** 2026-09-13
 > **Issue:** #3
 > **PRs:** #4 (CI/release), #5 (lockfile parity), #6 (in-range security updates), #7 (code fix), #8 (release `1.10.1`), #10 (CI hardening), #11 (review follow-ups), #12 (release `1.10.2`)
-> **Follow-up:** #9 (router attribution fallback for containers without `traefik.enable`)
+> **Follow-up:** #9, which added a router attribution fallback for containers without `traefik.enable` in `1.10.3`. See [002](002-router-attribution-fallback.md).
 
 ---
 
@@ -204,7 +204,7 @@ Pure functions with no substring matching and no container-id matching. For a ro
 
 **Candidates** are running containers with `traefik.enable=true`, which assumes Traefik runs with `exposedByDefault=false`.
 - A container without that label never owns a router. Its hostnames are unowned, so `DNS_DEFAULT_MANAGE` decides, and its `dns.*` overrides are not applied.
-- #9 tracks changing this to "strict, then fall back to containers with **no** `traefik.enable` label, never `false`".
+- Superseded in `1.10.3`: when no enabled container owns a router, containers with **no** `traefik.enable` label are tried next. See [002](002-router-attribution-fallback.md).
 
 A hostname is managed if any of its routers' owners has `dns.manage=true` and none has `dns.skip=true`. This goes through DNSManager's unchanged decision logic:
 
@@ -267,7 +267,7 @@ A poll awaits `refreshLabels`, and a DNS pass is started by a poll's publish wit
 | No `since=` replay | The daemon's ring buffer covers only about 30 s. | Resuming from the last event time |
 | No API-version pin | A pin works only while the daemon's minimum API is ≤ 1.51. | `new Docker({ version: 'v1.51' })` |
 | Debounce of 3 s (capped at 10 s) | Traefik's provider throttle (2 s default) can delay applying a change, and upstream had chosen 3 s from experience. | About 2 s |
-| Strict `traefik.enable=true` candidates | The issue specified it, and it avoids false ambiguity from stale labels. The side effect is covered by #9. | Any container not set to `false` |
+| Strict `traefik.enable=true` candidates | The issue specified it, and it avoids false ambiguity from stale labels. The side effect was fixed by #9 ([002](002-router-attribution-fallback.md)). | Any container not set to `false` |
 | Audit fixes in their own PR | Keeps the security bump reviewable, and ships it inside `1.10.1`. | Shipping on the unpatched tree; no audit step |
 | Tests in plain JavaScript (`node:test`) | No new dependencies and no lockfile changes. They were written so a later TypeScript migration can convert them mechanically. | TypeScript tests |
 | Exit watchdog in the tests instead of `--test-force-exit` | `--test-force-exit` would hide leaked timers and sockets. | `--test-force-exit`, `--test-timeout` |
@@ -309,7 +309,7 @@ A poll awaits `refreshLabels`, and a DNS pass is started by a poll's publish wit
 
 ## 10. Known limitations and follow-ups
 
-- **#9: containers without `traefik.enable`.** Such containers lose their `dns.*` overrides under strict attribution. With `DNS_DEFAULT_MANAGE=true` their records are rewritten to defaults; with `DNS_DEFAULT_MANAGE=false` they become unmanaged, and are deleted by cleanup when `CLEANUP_ORPHANED=true`. The fix is a strict-then-fallback rule.
+- **#9: containers without `traefik.enable`.** Fixed in `1.10.3` by a strict-then-fallback rule. See [002](002-router-attribution-fallback.md).
 - **Wider cleanup scope.** With `CLEANUP_ORPHANED=true`, the Cloudflare pagination fix means orphan cleanup now evaluates every record in the zone, not just the first 100. The behaviour is correct, but it is new after upgrading.
 - **Stack traces.** Guarded background paths log only the sanitised error summary.
 - **Moderate audit findings.** Three remain and need breaking upgrades: stream-json 1.x → 2.x, and uuid via dockerode.
