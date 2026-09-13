@@ -82,14 +82,6 @@ function getLabelValue(labels, genericPrefix, providerPrefix, key, defaultValue)
   return defaultValue;
 }
 
-/**
- * Collect the DNS labels of a container: provider-specific keys first, then generic keys
- * that are not under the provider prefix
- * @param {Object} labels - Container labels
- * @param {string} genericPrefix - Generic label prefix
- * @param {string} providerPrefix - Provider-specific label prefix
- * @returns {Object} - New object holding only the DNS labels
- */
 function extractDnsLabels(labels, genericPrefix, providerPrefix) {
   const dnsLabels = {};
   const entries = Object.entries(labels || {});

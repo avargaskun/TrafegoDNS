@@ -211,7 +211,7 @@ test('failed and timed-out refreshes keep the last good cache, publish nothing a
   );
   const debugFailures = linesContaining(entries, 'Could not refresh Docker labels (trigger=poll)');
   assert.deepEqual(debugFailures.map((entry) => entry.level), ['DEBUG']);
-  assert.match(debugFailures[0].text, /keeping last good cache \(1 containers\)$/);
+  assert.match(debugFailures[0].text, /\(trigger=poll\): timed out after 50 ms; keeping last good cache \(1 containers\)$/);
   assert.ok(lines.every((line) => !line.includes('SYNTHETIC-TOKEN') && !line.includes('Authorization')));
 
   state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
@@ -397,6 +397,29 @@ test('handleEvent logs and publishes handled actions and ignores exec noise', (t
   assert.equal(linesContaining(entries, 'Docker event health_status: healthy newapp').length, 1);
 });
 
+test('health_status: healthy, stop, die and destroy each lead to an event refresh; unhealthy and exec_die do not', async (t) => {
+  captureLogs(t);
+  const { monitor, published, state } = createHarness({ timings: FAST_TIMINGS });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+  assert.equal(state.listCalls.length, 1);
+  const eventRefreshes = () => published.filter((payload) => payload.trigger === 'event').length;
+
+  for (const [index, action] of ['health_status: healthy', 'stop', 'die', 'destroy'].entries()) {
+    writeEvent(state.streams[0], containerEvent(action, 'app', APP_ID));
+    await waitFor(() => eventRefreshes() === index + 1, 2000, `the event refresh after ${action}`);
+    assert.equal(state.listCalls.length, index + 2);
+  }
+
+  writeEvent(state.streams[0], containerEvent('health_status: unhealthy', 'app', APP_ID));
+  writeEvent(state.streams[0], containerEvent('exec_die', 'app', APP_ID));
+  await sleep(FAST_TIMINGS.eventDebounceMaxMs + 100);
+
+  assert.equal(state.listCalls.length, 5);
+  assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'event', 'event', 'event', 'event']);
+});
+
 test('when getEvents is refused, startWatching resolves, WARNs once and keeps retrying', async (t) => {
   const { entries, lines } = captureLogs(t);
   const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
@@ -478,6 +501,28 @@ test('a live connection keeps its signal past connectTimeoutMs, and stopWatching
   assert.equal(stream.destroyed, true);
   await sleep(3 * timings.reconnectMaxMs);
   assert.equal(state.eventsCalls.length, 1);
+});
+
+test('a getEvents that never answers is aborted after connectTimeoutMs, so startWatching resolves and retries', async (t) => {
+  const { entries } = captureLogs(t);
+  const timings = { ...FAST_TIMINGS, connectTimeoutMs: 50 };
+  const { monitor, state } = createHarness({ timings });
+  state.events = hangUntilAborted;
+  t.after(() => monitor.stopWatching());
+
+  let settled = false;
+  const booted = monitor.startWatching().finally(() => { settled = true; });
+  await waitFor(() => settled, timings.connectTimeoutMs + 1000, 'startWatching to resolve despite the hanging getEvents');
+  await booted;
+
+  assert.equal(state.eventsCalls[0].abortSignal.aborted, true);
+  const warns = entries.filter((entry) => entry.level === 'WARN');
+  assert.equal(warns.length, 1);
+  assert.match(warns[0].text, /Docker is unreachable \(connect timed out after 50 ms\); continuing and retrying in the background$/);
+  await waitFor(() => state.eventsCalls.length >= 2, 2000, 'a reconnect attempt');
+  assert.equal(linesContaining(entries, 'Docker event stream reconnect attempt 1 in').length, 1);
+  assert.equal(state.listCalls.length, 0);
+  assert.equal(monitor.hasLoadedLabels(), false);
 });
 
 test('a getEvents that resolves after stopWatching is destroyed and never re-listed', async (t) => {

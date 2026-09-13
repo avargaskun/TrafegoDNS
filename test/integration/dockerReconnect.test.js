@@ -228,6 +228,34 @@ test('a connection that outlives connectTimeoutMs is not aborted by the connect 
   assert.equal(faults.length, 0, faultSummary(faults));
 });
 
+test('an /events request that never answers is aborted after connectTimeoutMs, WARNed once, and recovered', async (t) => {
+  const connectTimeoutMs = 250;
+  const { daemon, logs, faults, monitor } = await setup(t, { timings: { connectTimeoutMs } });
+  daemon.setEventsMode('hang');
+
+  let settled = false;
+  const booted = monitor.startWatching().finally(() => { settled = true; });
+  await waitFor(() => settled, connectTimeoutMs + 1000, 'startWatching to resolve despite the hanging event stream');
+  await booted;
+
+  const warns = warnings(logs.entries);
+  assert.equal(warns.length, 1, warns.map((entry) => entry.text).join('\n'));
+  assert.match(warns[0].text, new RegExp(`Docker is unreachable \\(connect timed out after ${connectTimeoutMs} ms\\); continuing and retrying in the background$`));
+  assert.ok(daemon.stats.eventsConnections >= 1);
+  assert.equal(daemon.stats.listRequests, 0);
+  assert.equal(monitor.hasLoadedLabels(), false);
+
+  daemon.setEventsMode('ok');
+  const recovered = await waitFor(() => reconnectedLine(logs.entries), 3000, 'the reconnect INFO line');
+  await waitFor(() => daemon.openEventStreams() === 1, 2000, 'the event stream to open');
+
+  assert.match(recovered.text, /re-listed 1 running containers/);
+  assert.ok(daemon.stats.eventsConnections >= 2);
+  assert.equal(monitor.hasLoadedLabels(), true);
+  assert.equal(warnings(logs.entries).length, 1);
+  assert.equal(faults.length, 0, faultSummary(faults));
+});
+
 test('(f) booting while Docker is down gates DNS passes until labels load, then polls publish again', async (t) => {
   const daemon = await startFakeDockerDaemon();
   daemon.setContainers([PROXY]);

@@ -110,13 +110,18 @@ class DockerMonitor {
     const gen = ++this.generation;
     const abortController = new AbortController();
     this.abortController = abortController;
-    const connectTimer = setTimeout(() => abortController.abort(), this.timings.connectTimeoutMs);
+    let timedOut = false;
+    const connectTimer = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, this.timings.connectTimeoutMs);
     let source;
     try {
       source = await this.getEvents({ filters: { type: ['container'] }, abortSignal: abortController.signal });
     } catch (error) {
       clearTimeout(connectTimer);
-      if (gen === this.generation) this.handleStreamClosed(gen, error, { connected: false, trigger });
+      const failure = timedOut ? new Error(`connect timed out after ${this.timings.connectTimeoutMs} ms`) : error;
+      if (gen === this.generation) this.handleStreamClosed(gen, failure, { connected: false, trigger });
       return;
     }
     clearTimeout(connectTimer);
@@ -217,7 +222,10 @@ class DockerMonitor {
       const changed = this.applyContainerList(list, trigger);
       return { ok: true, containerCount: list.length, changed };
     } catch (error) {
-      const message = `Could not refresh Docker labels (trigger=${trigger}): ${describeError(error)}; keeping last good cache (${this.containers.length} containers)`;
+      const reason = ['AbortError', 'TimeoutError'].includes(error?.name)
+        ? `timed out after ${this.timings.refreshTimeoutMs} ms`
+        : describeError(error);
+      const message = `Could not refresh Docker labels (trigger=${trigger}): ${reason}; keeping last good cache (${this.containers.length} containers)`;
       if (this.refreshFailing) {
         logger.debug(message);
       } else {
