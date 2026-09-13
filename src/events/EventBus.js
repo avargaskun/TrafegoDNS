@@ -35,7 +35,7 @@ class EventBus {
     
     const wrapped = (data) => runGuarded(`Error in ${eventType} subscriber`, () => handler(data));
     this.emitter.on(eventType, wrapped);
-
+    
     // Track subscriber counts
     this.subscriberCounts[eventType] = (this.subscriberCounts[eventType] || 0) + 1;
     logger.debug(`Subscribed to event ${eventType} (${this.subscriberCounts[eventType]} subscribers)`);
