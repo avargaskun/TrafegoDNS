@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.3](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.2...v1.10.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* fall back to containers without a traefik.enable label for router attribution ([#14](https://github.com/avargaskun/TrafegoDNS/issues/14)) ([f0c8b62](https://github.com/avargaskun/TrafegoDNS/commit/f0c8b622afeceda23ed98822d15397e747d454d8))
+
 ## [1.10.2](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.1...v1.10.2) (2026-09-13)
 
 
