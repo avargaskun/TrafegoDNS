@@ -1,11 +1,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const Docker = require('dockerode');
 const DockerMonitor = require('../../src/services/DockerMonitor');
+const TraefikMonitor = require('../../src/services/TraefikMonitor');
 const { EventBus } = require('../../src/events/EventBus');
+const EventTypes = require('../../src/events/EventTypes');
 const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { startFakeDockerDaemon } = require('../helpers/fakeDockerDaemon');
+const { startFakeTraefik } = require('../helpers/fakeTraefik');
 
 const TIMINGS = {
   reconnectInitialMs: 20,
@@ -176,5 +180,63 @@ test('(e) stopWatching never reconnects, even when the stream is severed afterwa
   assert.equal(daemon.openEventStreams(), 0);
   assert.equal(reconnectAttempts(logs.entries).length, 0);
   assert.equal(warnings(logs.entries).length, 0);
+  assert.deepEqual(faults, [], faultSummary(faults));
+});
+
+test('(f) booting while Docker is down gates DNS passes until labels load, then polls publish again', async (t) => {
+  const daemon = await startFakeDockerDaemon();
+  daemon.setContainers([PROXY]);
+  const { port } = daemon;
+  await daemon.stop();
+
+  const traefik = await startFakeTraefik({
+    routers: [{ name: 'proxy@docker', provider: 'docker', entryPoints: ['https'], service: 'proxy', rule: 'Host(`proxy.example.com`)', status: 'enabled' }]
+  });
+  const logs = captureLogs(t, 'DEBUG');
+  const faults = recordProcessFaults(t);
+  const config = makeConfig({ traefikApiUrl: traefik.url });
+  const bus = new EventBus();
+  const docker = new Docker({ host: '127.0.0.1', port, protocol: 'http' });
+  const dockerMonitor = new DockerMonitor(config, bus, { docker, timings: TIMINGS, random: () => 0.5 });
+  const traefikMonitor = new TraefikMonitor(config, bus);
+  traefikMonitor.dockerMonitor = dockerMonitor;
+  const routerUpdates = [];
+  bus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => routerUpdates.push(data));
+  t.after(async () => {
+    traefikMonitor.stopPolling();
+    dockerMonitor.stopWatching();
+    await daemon.stop();
+    await traefik.stop();
+  });
+
+  await dockerMonitor.startWatching();
+
+  const unreachable = () => logs.entries.filter((entry) => entry.level === 'WARN' && entry.text.includes('Docker is unreachable'));
+  assert.equal(unreachable().length, 1);
+  assert.match(unreachable()[0].text, /ECONNREFUSED/);
+  assert.equal(dockerMonitor.hasLoadedLabels(), false);
+
+  await traefikMonitor.pollTraefikAPI();
+  await traefikMonitor.pollTraefikAPI();
+
+  const skips = logs.entries.filter((entry) => entry.text.includes('Skipping DNS pass'));
+  assert.deepEqual(skips.map((entry) => entry.level), ['WARN', 'DEBUG']);
+  assert.equal(routerUpdates.length, 0);
+  assert.equal(dockerMonitor.hasLoadedLabels(), false);
+
+  await daemon.restart();
+  await waitFor(() => dockerMonitor.hasLoadedLabels(), 3000, 'labels to load after the daemon restarts');
+  const recovered = await waitFor(() => reconnectedLine(logs.entries), 3000, 'the reconnect INFO line');
+  assert.match(recovered.text, /re-listed 1 running containers/);
+  assert.equal(routerUpdates.length, 0, 'without startPolling() the reconnect refresh starts no poll');
+
+  await traefikMonitor.pollTraefikAPI();
+
+  assert.equal(routerUpdates.length, 1);
+  assert.deepEqual(routerUpdates[0].hostnames, ['proxy.example.com']);
+  assert.equal(routerUpdates[0].containerLabels['proxy.example.com']['dns.manage'], 'true');
+  assert.equal(unreachable().length, 1);
+  assert.equal(logs.entries.filter((entry) => entry.text.includes('Skipping DNS pass')).length, 2);
+  assert.deepEqual(dockerMonitor.getContainers().map((container) => container.name), ['proxy']);
   assert.deepEqual(faults, [], faultSummary(faults));
 });
