@@ -211,7 +211,7 @@ test('failed and timed-out refreshes keep the last good cache, publish nothing a
   );
   const debugFailures = linesContaining(entries, 'Could not refresh Docker labels (trigger=poll)');
   assert.deepEqual(debugFailures.map((entry) => entry.level), ['DEBUG']);
-  assert.match(debugFailures[0].text, /keeping last good cache \(1 containers\)$/);
+  assert.match(debugFailures[0].text, /\(trigger=poll\): timed out after 50 ms; keeping last good cache \(1 containers\)$/);
   assert.ok(lines.every((line) => !line.includes('SYNTHETIC-TOKEN') && !line.includes('Authorization')));
 
   state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
@@ -518,7 +518,7 @@ test('a getEvents that never answers is aborted after connectTimeoutMs, so start
   assert.equal(state.eventsCalls[0].abortSignal.aborted, true);
   const warns = entries.filter((entry) => entry.level === 'WARN');
   assert.equal(warns.length, 1);
-  assert.match(warns[0].text, /Docker is unreachable \(.+\); continuing and retrying in the background$/);
+  assert.match(warns[0].text, /Docker is unreachable \(connect timed out after 50 ms\); continuing and retrying in the background$/);
   await waitFor(() => state.eventsCalls.length >= 2, 2000, 'a reconnect attempt');
   assert.equal(linesContaining(entries, 'Docker event stream reconnect attempt 1 in').length, 1);
   assert.equal(state.listCalls.length, 0);

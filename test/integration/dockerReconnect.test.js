@@ -240,7 +240,7 @@ test('an /events request that never answers is aborted after connectTimeoutMs, W
 
   const warns = warnings(logs.entries);
   assert.equal(warns.length, 1, warns.map((entry) => entry.text).join('\n'));
-  assert.match(warns[0].text, /Docker is unreachable \(.+\); continuing and retrying in the background$/);
+  assert.match(warns[0].text, /Docker is unreachable \(connect timed out after 100 ms\); continuing and retrying in the background$/);
   assert.ok(daemon.stats.eventsConnections >= 1);
   assert.equal(daemon.stats.listRequests, 0);
   assert.equal(monitor.hasLoadedLabels(), false);

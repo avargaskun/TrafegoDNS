@@ -139,7 +139,7 @@ test('(g) a failing, then hanging, container list keeps the last good cache and 
   await poll;
 
   assert.equal(daemon.stats.listRequests, listBefore + 1);
-  assert.equal(entriesAt(logs, 'DEBUG', `${REFRESH_FAILURE} (trigger=poll)`).length, 1);
+  assert.equal(entriesAt(logs, 'DEBUG', `${REFRESH_FAILURE} (trigger=poll): timed out after ${REFRESH_TIMEOUT_MS} ms;`).length, 1);
   assert.deepEqual(dockerMonitor.getContainers(), goodContainers);
   assert.equal(entriesAt(logs, 'WARN', REFRESH_FAILURE).length, 1);
   assert.equal(logs.entries.filter((entry) => entry.level === 'WARN').length, 1);
