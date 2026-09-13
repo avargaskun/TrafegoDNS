@@ -19,6 +19,17 @@ jobs:
         with:
           node-version: '23.11.1'
       - run: npm ci
+      - name: npm audit (report-only until PR 2b)
+        continue-on-error: true
+        run: |
+          echo '### npm audit --omit=dev --audit-level=high' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          npm audit --omit=dev --audit-level=high | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: Test
         run: |
           if [ -d test ]; then npm test; else echo "No test/ directory yet; skipping npm test"; fi
