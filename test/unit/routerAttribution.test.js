@@ -519,3 +519,39 @@ test('fallbackRouters lists a fallback router even when another router\'s ambigu
   assert.deepEqual(result.ambiguousRouters, [{ routerName: 'shared@docker', ownerNames: ['left', 'right'] }]);
   assert.deepEqual(result.fallbackRouters, [{ routerName: 'legacy@docker', ownerName: 'legacy' }]);
 });
+
+test('a fallback owner with dns.skip makes a strict-owned hostname skipped', () => {
+  const hostnameRouters = new Map([['shop.example.com', [dockerRef('web@docker'), dockerRef('api@docker')]]]);
+  const web = container('web', {
+    'traefik.enable': 'true',
+    'traefik.http.routers.web.rule': 'Host(`shop.example.com`)',
+    'dns.manage': 'true',
+    'dns.proxied': 'false'
+  });
+  const api = container('api', { 'traefik.http.routers.api.rule': 'Host(`shop.example.com`) && PathPrefix(`/api`)', 'dns.skip': 'true' });
+
+  const result = resolveHostnameLabels(hostnameRouters, [web, api], cfg);
+  assert.equal(result.owners['shop.example.com'], 'api');
+  assert.equal(result.containerLabels['shop.example.com']['dns.skip'], 'true');
+  assert.deepEqual(result.ownerConflicts, []);
+  assert.deepEqual(result.fallbackRouters, [{ routerName: 'api@docker', ownerName: 'api' }]);
+});
+
+test('a fallback-ambiguous router excludes a hostname that a strict owner also serves', () => {
+  const hostnameRouters = new Map([['shop.example.com', [dockerRef('web@docker'), dockerRef('api@docker')]]]);
+  const web = container('web', {
+    'traefik.enable': 'true',
+    'traefik.http.routers.web.rule': 'Host(`shop.example.com`)',
+    'dns.manage': 'true',
+    'dns.proxied': 'false'
+  });
+  const apiRule = 'Host(`shop.example.com`) && PathPrefix(`/api`)';
+  const api1 = container('api-1', { 'traefik.http.routers.api.rule': apiRule, 'dns.manage': 'true' });
+  const api2 = container('api-2', { 'traefik.http.routers.api.rule': apiRule, 'dns.proxied': 'false' });
+
+  const result = resolveHostnameLabels(hostnameRouters, [web, api1, api2], cfg);
+  assert.deepEqual([...result.excludedHostnames], ['shop.example.com']);
+  assert.deepEqual(result.ambiguousRouters, [{ routerName: 'api@docker', ownerNames: ['api-1', 'api-2'] }]);
+  assert.equal(Object.hasOwn(result.containerLabels, 'shop.example.com'), false);
+  assert.deepEqual(result.fallbackRouters, []);
+});
