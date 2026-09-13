@@ -38,6 +38,7 @@ class DNSManager {
     this.previousManagedHostnames = null;
     
     this.dnsPass = new SingleFlight((hostnames, containerLabels) => this.processHostnames(hostnames, containerLabels));
+    this.reportedPass = null;
     
     // Subscribe to relevant events
     this.setupEventSubscriptions();
@@ -66,7 +67,13 @@ class DNSManager {
    */
   setupEventSubscriptions() {
     // Subscribe to Traefik router updates
-    this.eventBus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => this.dnsPass.run(data.hostnames, data.containerLabels));
+    this.eventBus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => {
+      const pass = this.dnsPass.run(data.hostnames, data.containerLabels);
+      // Publishes that join one queued pass share its promise; hand it to the EventBus guard once.
+      if (pass === this.reportedPass) return undefined;
+      this.reportedPass = pass;
+      return pass;
+    });
   }
   
   /**

@@ -6,6 +6,9 @@ const EventTypes = require('../../src/events/EventTypes');
 const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const SKIP_LINE = 'Skipping DNS pass: Docker container labels have not been loaded yet';
 

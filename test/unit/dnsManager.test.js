@@ -6,10 +6,14 @@ const path = require('node:path');
 const DNSManager = require('../../src/services/DNSManager');
 const { EventBus } = require('../../src/events/EventBus');
 const EventTypes = require('../../src/events/EventTypes');
+const { describeError } = require('../../src/utils/errors');
 const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { createStubDnsProvider } = require('../helpers/stubDnsProvider');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const MANAGE = { 'dns.manage': 'true' };
 
@@ -254,7 +258,41 @@ test('a failing pass is logged by the EventBus guard and the next pass still run
   const update = await runPass(harness, ['a.example.com']);
   assert.deepEqual(update.processedHostnames, ['a.example.com']);
   await new Promise(setImmediate);
-  assert.deepEqual(unhandled, []);
+  assert.equal(unhandled.length, 0, unhandled.map(describeError).join('; '));
+});
+
+test('a failed pass that several publishes joined is logged once', async (t) => {
+  const { entries } = captureLogs(t);
+  const harness = createManager(t);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const gate = deferred();
+  const batchEnsure = t.mock.method(harness.stub, 'batchEnsureRecords', async () => {
+    await gate.promise;
+    throw new Error('provider unavailable');
+  });
+  const guardLines = () => entries.filter(
+    (entry) => entry.level === 'ERROR' && entry.text.includes('Error in traefik:routers:updated subscriber: provider unavailable')
+  );
+  const publish = (hostname) => harness.bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, {
+    hostnames: [hostname],
+    containerLabels: labelsFor([hostname])
+  });
+
+  publish('first.example.com');
+  await waitFor(() => batchEnsure.mock.callCount() === 1, 2000, 'the first pass to reach the provider');
+  publish('second.example.com');
+  publish('third.example.com');
+  publish('fourth.example.com');
+  gate.resolve();
+  await waitFor(() => batchEnsure.mock.callCount() === 2 && guardLines().length >= 2, 2000, 'both failed passes to be logged');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(batchEnsure.mock.callCount(), 2);
+  assert.equal(guardLines().length, 2);
+  assert.equal(unhandled.length, 0, unhandled.map(describeError).join('; '));
 });
 
 test('a hostname labelled dns.skip=true is unmanaged even with defaultManage on', async (t) => {

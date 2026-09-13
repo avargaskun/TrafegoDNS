@@ -19,6 +19,13 @@ const http = require('node:http');
  */
 
 /**
+ * Distortions of the record listing's `result_info`, for testing a client's pagination edge cases.
+ * @typedef {Object} FakeCloudflareListingQuirks
+ * @property {number} [totalPages] - Reported as `result_info.total_pages` instead of the real page count.
+ * @property {boolean} [omitResultInfo] - Leaves `result_info` out of listing responses.
+ */
+
+/**
  * A request as received; headers are deliberately never recorded.
  * @typedef {Object} FakeCloudflareRequest
  * @property {string} method
@@ -35,6 +42,7 @@ const http = require('node:http');
  * @property {(list: FakeCloudflareRecord[]) => void} setRecords - Replaces the DNS records.
  * @property {(page: number | null, status?: number) => void} failPage - Makes that page of the record listing answer `status` (default 500); `null` clears it.
  * @property {(status: number | null) => void} setWriteFailure - Makes every POST and PUT answer `status`; `null` clears it.
+ * @property {(quirks: FakeCloudflareListingQuirks) => void} setListingQuirks - Replaces the listing quirks; `{}` restores accurate `result_info`.
  * @property {FakeCloudflareRequest[]} requests - Every request received (live array).
  * @property {() => Promise<void>} stop - Closes the server and destroys every socket.
  */
@@ -87,6 +95,8 @@ async function startFakeCloudflare({ zoneName = 'example.com', zoneId = 'zone-1'
   let failedPage = null;
   let failedPageStatus = 500;
   let writeFailure = null;
+  /** @type {FakeCloudflareListingQuirks} */
+  let quirks = {};
   /** @type {FakeCloudflareRequest[]} */
   const requests = [];
   const sockets = new Set();
@@ -97,12 +107,13 @@ async function startFakeCloudflare({ zoneName = 'example.com', zoneId = 'zone-1'
     const perPage = positiveInt(query.per_page, DEFAULT_PER_PAGE);
     if (page === failedPage) return [failedPageStatus, failure(failedPageStatus)];
     const result = list.slice((page - 1) * perPage, page * perPage);
+    if (quirks.omitResultInfo) return [200, ok(result)];
     return [200, ok(result, {
       page,
       per_page: perPage,
       count: result.length,
       total_count: list.length,
-      total_pages: Math.ceil(list.length / perPage)
+      total_pages: quirks.totalPages ?? Math.ceil(list.length / perPage)
     })];
   }
 
@@ -171,6 +182,9 @@ async function startFakeCloudflare({ zoneName = 'example.com', zoneId = 'zone-1'
     },
     setWriteFailure(status) {
       writeFailure = status;
+    },
+    setListingQuirks(next) {
+      quirks = { ...next };
     },
     async stop() {
       if (!server.listening) return;

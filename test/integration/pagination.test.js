@@ -8,6 +8,9 @@ const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { startFakeTraefik } = require('../helpers/fakeTraefik');
 const { startFakeCloudflare } = require('../helpers/fakeCloudflare');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 function routers(count) {
   return Array.from({ length: count }, (_, i) => ({
@@ -75,9 +78,10 @@ test('a refused connection keeps the Traefik-specific error message', async (t) 
   captureLogs(t);
   const monitor = new TraefikMonitor(makeConfig({ traefikApiUrl: 'http://127.0.0.1:1/api' }), new EventBus());
 
-  await assert.rejects(monitor.getRouters(), {
-    message: 'Connection refused to Traefik API at http://127.0.0.1:1/api. Is Traefik running?'
-  });
+  const error = await rejectionOf(monitor.getRouters());
+
+  assert.ok(error, 'getRouters() should reject');
+  assert.equal(error.message, 'Connection refused to Traefik API at http://127.0.0.1:1/api. Is Traefik running?');
 });
 
 function dnsRecords(count) {
@@ -110,18 +114,22 @@ function rejectionOf(promise) {
   return promise.then(() => null, (error) => error);
 }
 
+async function cachedRecordIds(provider) {
+  return (await provider.getRecordsFromCache()).map((record) => record.id);
+}
+
 test('Cloudflare records are cached across every page', async (t) => {
   const { cloudflare, provider } = await setupCloudflare(t, 250);
 
   await provider.init();
 
-  assert.equal(provider.recordCache.records.length, 250);
-  assert.deepEqual(provider.recordCache.records.map((r) => r.id), dnsRecords(250).map((r) => r.id));
   assert.deepEqual(recordPageRequests(cloudflare), [
     { per_page: '100', page: '1' },
     { per_page: '100', page: '2' },
     { per_page: '100', page: '3' }
   ]);
+  assert.deepEqual(await cachedRecordIds(provider), dnsRecords(250).map((r) => r.id));
+  assert.equal(recordPageRequests(cloudflare).length, 3, 'the cached records were served without another listing');
 });
 
 test('an exact multiple of the Cloudflare page size takes no extra request', async (t) => {
@@ -129,8 +137,8 @@ test('an exact multiple of the Cloudflare page size takes no extra request', asy
 
   await provider.init();
 
-  assert.equal(provider.recordCache.records.length, 200);
   assert.equal(recordPageRequests(cloudflare).length, 2);
+  assert.equal((await cachedRecordIds(provider)).length, 200);
 });
 
 test('an empty Cloudflare zone takes a single record request', async (t) => {
@@ -138,14 +146,13 @@ test('an empty Cloudflare zone takes a single record request', async (t) => {
 
   await provider.init();
 
-  assert.deepEqual(provider.recordCache.records, []);
   assert.equal(recordPageRequests(cloudflare).length, 1);
+  assert.deepEqual(await cachedRecordIds(provider), []);
 });
 
 test('a failed Cloudflare page rejects the refresh and keeps the previous cache', async (t) => {
   const { cloudflare, provider } = await setupCloudflare(t, 250);
   await provider.init();
-  const previous = provider.recordCache;
   cloudflare.setRecords(dnsRecords(251));
   cloudflare.failPage(2);
 
@@ -153,45 +160,32 @@ test('a failed Cloudflare page rejects the refresh and keeps the previous cache'
 
   assert.ok(error, 'refreshRecordCache() should reject');
   assert.equal(error.response?.status, 500);
-  assert.equal(provider.recordCache, previous);
-  assert.equal(provider.recordCache.records.length, 250);
   assert.equal(recordPageRequests(cloudflare).length, 5);
+  assert.deepEqual(await cachedRecordIds(provider), dnsRecords(250).map((r) => r.id));
+  assert.equal(recordPageRequests(cloudflare).length, 5, 'the previous cache was served without another listing');
 
   cloudflare.failPage(null);
   await provider.refreshRecordCache();
 
-  assert.equal(provider.recordCache.records.length, 251);
+  assert.equal((await cachedRecordIds(provider)).length, 251);
 });
 
-function stubbedRecordPages(t, pages) {
-  captureLogs(t);
-  const provider = new CloudflareProvider(makeConfig());
-  const pageRequests = [];
-  t.mock.method(provider.client, 'get', async (url, { params }) => {
-    if (url === '/zones') return { data: { result: [{ id: 'zone-1', name: params.name }] } };
-    pageRequests.push(params.page);
-    return { data: pages[params.page - 1] };
-  });
-  return { provider, pageRequests };
-}
-
 test('an empty Cloudflare page ends the listing even when total_pages promises more', async (t) => {
-  const { provider, pageRequests } = stubbedRecordPages(t, [
-    { result: dnsRecords(100), result_info: { total_pages: 5 } },
-    { result: [], result_info: { total_pages: 5 } }
-  ]);
+  const { cloudflare, provider } = await setupCloudflare(t, 100);
+  cloudflare.setListingQuirks({ totalPages: 5 });
 
   await provider.init();
 
-  assert.deepEqual(pageRequests, [1, 2]);
-  assert.equal(provider.recordCache.records.length, 100);
+  assert.deepEqual(recordPageRequests(cloudflare).map((query) => query.page), ['1', '2']);
+  assert.equal((await cachedRecordIds(provider)).length, 100);
 });
 
 test('a Cloudflare response without result_info is treated as the only page', async (t) => {
-  const { provider, pageRequests } = stubbedRecordPages(t, [{ result: dnsRecords(100) }]);
+  const { cloudflare, provider } = await setupCloudflare(t, 250);
+  cloudflare.setListingQuirks({ omitResultInfo: true });
 
   await provider.init();
 
-  assert.deepEqual(pageRequests, [1]);
-  assert.equal(provider.recordCache.records.length, 100);
+  assert.deepEqual(recordPageRequests(cloudflare).map((query) => query.page), ['1']);
+  assert.deepEqual(await cachedRecordIds(provider), dnsRecords(100).map((r) => r.id));
 });

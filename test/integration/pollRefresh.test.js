@@ -14,6 +14,9 @@ const { waitFor } = require('../helpers/waitFor');
 const { startFakeDockerDaemon } = require('../helpers/fakeDockerDaemon');
 const { createStubDnsProvider } = require('../helpers/stubDnsProvider');
 const { FAST_TIMINGS, startTraefikPipeline, batchedHostnames } = require('../helpers/pipeline');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const REFRESH_TIMEOUT_MS = 200;
 

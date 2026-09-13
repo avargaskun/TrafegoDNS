@@ -4,6 +4,9 @@ const golden = require('../fixtures/goldenAttribution');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { startTraefikPipeline, batchedHostnames } = require('../helpers/pipeline');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const PRESEEDED = ['app.example.com', 'watcher.example.com', 'traefik.example.com'];
 const SEED_RECORDS = PRESEEDED.map((name) => ({ type: 'CNAME', name, content: 'example.com', proxied: true, ttl: 1 }));

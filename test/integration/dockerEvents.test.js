@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { startTraefikPipeline, batchedHostnames } = require('../helpers/pipeline');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const PROXY = {
   Id: 'c'.repeat(64),

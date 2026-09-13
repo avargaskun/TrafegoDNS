@@ -10,6 +10,9 @@ const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { startFakeDockerDaemon } = require('../helpers/fakeDockerDaemon');
 const { startFakeTraefik } = require('../helpers/fakeTraefik');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const TIMINGS = {
   reconnectInitialMs: 20,
@@ -56,7 +59,7 @@ function faultSummary(faults) {
   return faults.map(([kind, error]) => `${kind}: ${error?.message ?? String(error)}`).join('; ');
 }
 
-async function setup(t, { containers = [PROXY] } = {}) {
+async function setup(t, { containers = [PROXY], timings = {} } = {}) {
   const daemon = await startFakeDockerDaemon();
   daemon.setContainers(containers);
   daemon.noise(true);
@@ -64,7 +67,7 @@ async function setup(t, { containers = [PROXY] } = {}) {
   const faults = recordProcessFaults(t);
   const monitor = new DockerMonitor(makeConfig(), new EventBus(), {
     docker: daemon.docker,
-    timings: TIMINGS,
+    timings: { ...TIMINGS, ...timings },
     random: () => 0.5
   });
   t.after(async () => {
@@ -131,7 +134,7 @@ test('(c) a terminated event stream reconnects once, re-lists once and keeps han
       assert.equal(logs.lines.filter((line) => line.includes('exec_')).length, 0);
       assert.equal(warnings(logs.entries).length, 1);
       assert.equal(daemon.openEventStreams(), 1);
-      assert.deepEqual(faults, [], faultSummary(faults));
+      assert.equal(faults.length, 0, faultSummary(faults));
     });
   }
 });
@@ -161,7 +164,7 @@ test('(d) an unreachable daemon is retried with backoff, WARNed once, and recove
   assert.equal(warnings(logs.entries).length, 1);
   assert.equal(daemon.openEventStreams(), 1);
   assert.deepEqual(monitor.getContainers().map((container) => container.name), ['proxy', 'db']);
-  assert.deepEqual(faults, [], faultSummary(faults));
+  assert.equal(faults.length, 0, faultSummary(faults));
 });
 
 test('(e) stopWatching never reconnects, even when the stream is severed afterwards', async (t) => {
@@ -180,7 +183,49 @@ test('(e) stopWatching never reconnects, even when the stream is severed afterwa
   assert.equal(daemon.openEventStreams(), 0);
   assert.equal(reconnectAttempts(logs.entries).length, 0);
   assert.equal(warnings(logs.entries).length, 0);
-  assert.deepEqual(faults, [], faultSummary(faults));
+  assert.equal(faults.length, 0, faultSummary(faults));
+});
+
+test('stopWatching alone closes the live event stream on the daemon side', async (t) => {
+  const { daemon, logs, faults, monitor } = await setup(t);
+  await startConnected(daemon, monitor);
+  const eventsBefore = daemon.stats.eventsConnections;
+  const listBefore = daemon.stats.listRequests;
+
+  monitor.stopWatching();
+  await waitFor(() => daemon.openEventStreams() === 0, 2000, 'the daemon to see the event stream close');
+  await sleep(3 * TIMINGS.reconnectMaxMs);
+
+  assert.equal(daemon.stats.eventsConnections, eventsBefore);
+  assert.equal(daemon.stats.listRequests, listBefore);
+  assert.equal(reconnectAttempts(logs.entries).length, 0);
+  assert.equal(warnings(logs.entries).length, 0);
+  assert.equal(faults.length, 0, faultSummary(faults));
+});
+
+test('a connection that outlives connectTimeoutMs is not aborted by the connect timer', async (t) => {
+  const connectTimeoutMs = 100;
+  const { daemon, logs, faults, monitor } = await setup(t, { timings: { connectTimeoutMs } });
+  await startConnected(daemon, monitor);
+  const eventsBefore = daemon.stats.eventsConnections;
+  const listBefore = daemon.stats.listRequests;
+
+  await sleep(4 * connectTimeoutMs);
+
+  assert.equal(daemon.stats.eventsConnections, eventsBefore);
+  assert.equal(daemon.stats.listRequests, listBefore);
+  assert.equal(daemon.openEventStreams(), 1);
+  assert.equal(warnings(logs.entries).length, 0, warnings(logs.entries).map((entry) => entry.text).join('\n'));
+  assert.equal(reconnectAttempts(logs.entries).length, 0);
+
+  daemon.setContainers([PROXY, NEWAPP]);
+  assert.equal(daemon.emit('start', 'newapp', NEWAPP.Id), 1);
+  await waitFor(
+    () => monitor.getContainers().some((container) => container.name === 'newapp'),
+    2000,
+    'newapp in the refreshed containers'
+  );
+  assert.equal(faults.length, 0, faultSummary(faults));
 });
 
 test('(f) booting while Docker is down gates DNS passes until labels load, then polls publish again', async (t) => {
@@ -238,5 +283,5 @@ test('(f) booting while Docker is down gates DNS passes until labels load, then 
   assert.equal(unreachable().length, 1);
   assert.equal(logs.entries.filter((entry) => entry.text.includes('Skipping DNS pass')).length, 2);
   assert.deepEqual(dockerMonitor.getContainers().map((container) => container.name), ['proxy']);
-  assert.deepEqual(faults, [], faultSummary(faults));
+  assert.equal(faults.length, 0, faultSummary(faults));
 });

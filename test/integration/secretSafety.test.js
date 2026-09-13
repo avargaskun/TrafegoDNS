@@ -11,6 +11,9 @@ const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 const { startFakeCloudflare } = require('../helpers/fakeCloudflare');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const SECRET_MARKERS = ['SYNTHETIC-TOKEN-123', 'Authorization', 'Bearer'];
 const GUARD_LINE = 'Error in traefik:routers:updated subscriber:';

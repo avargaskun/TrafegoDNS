@@ -7,6 +7,9 @@ const EventTypes = require('../../src/events/EventTypes');
 const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
+const { installExitWatchdog } = require('../helpers/exitWatchdog');
+
+installExitWatchdog();
 
 const APP_ID = 'a1'.repeat(32);
 const DB_ID = 'b2'.repeat(32);
@@ -28,7 +31,12 @@ function deferred() {
 
 function hangUntilAborted(opts) {
   return new Promise((_resolve, reject) => {
-    opts.abortSignal.addEventListener('abort', () => reject(opts.abortSignal.reason), { once: true });
+    // Stands in for the pending socket: AbortSignal.timeout's timer is unref'd and alone lets the loop drain.
+    const keepAlive = setInterval(() => {}, 1000);
+    opts.abortSignal.addEventListener('abort', () => {
+      clearInterval(keepAlive);
+      reject(opts.abortSignal.reason);
+    }, { once: true });
   });
 }
 
@@ -449,6 +457,76 @@ test('stopWatching cancels pending reconnects and debounces, and a restart still
 
   await waitFor(() => published.some((payload) => payload.trigger === 'event'), 2000, 'an event refresh after the restart');
   assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'boot', 'event']);
+});
+
+test('a live connection keeps its signal past connectTimeoutMs, and stopWatching aborts it and destroys the stream', async (t) => {
+  captureLogs(t);
+  const timings = { ...FAST_TIMINGS, connectTimeoutMs: 50 };
+  const { monitor, state } = createHarness({ timings });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  t.after(() => monitor.stopWatching());
+  await monitor.startWatching();
+  const [stream] = state.streams;
+  const { abortSignal } = state.eventsCalls[0];
+
+  await sleep(3 * timings.connectTimeoutMs);
+  assert.equal(abortSignal.aborted, false);
+  assert.equal(stream.destroyed, false);
+
+  monitor.stopWatching();
+  assert.equal(abortSignal.aborted, true);
+  assert.equal(stream.destroyed, true);
+  await sleep(3 * timings.reconnectMaxMs);
+  assert.equal(state.eventsCalls.length, 1);
+});
+
+test('a getEvents that resolves after stopWatching is destroyed and never re-listed', async (t) => {
+  const { entries } = captureLogs(t);
+  const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
+  const pending = deferred();
+  state.events = () => pending.promise;
+  t.after(() => monitor.stopWatching());
+
+  const booted = monitor.startWatching();
+  await waitFor(() => state.eventsCalls.length === 1, 2000, 'the getEvents call');
+  monitor.stopWatching();
+  const late = new PassThrough();
+  pending.resolve(late);
+  await booted;
+
+  assert.equal(late.destroyed, true);
+  assert.equal(state.listCalls.length, 0);
+  assert.equal(monitor.hasLoadedLabels(), false);
+  await sleep(3 * FAST_TIMINGS.reconnectMaxMs);
+  assert.equal(state.eventsCalls.length, 1);
+  assert.equal(entries.filter((entry) => entry.level === 'WARN').length, 0);
+});
+
+test('only a connection that stayed up for stableConnectionMs resets the reconnect backoff', async (t) => {
+  const { entries } = captureLogs(t);
+  const timings = { ...FAST_TIMINGS, reconnectMaxMs: 1000, stableConnectionMs: 100 };
+  const { monitor, state } = createHarness({ timings });
+  state.respond = async () => [dockerContainer(APP_ID, 'app', APP_LABELS)];
+  state.events = async () => {
+    if (state.eventsCalls.length <= 2) throw refusedError();
+    return openStream(state);
+  };
+  t.after(() => monitor.stopWatching());
+  const reconnectedLines = () => linesContaining(entries, 'Docker event stream reconnected');
+  const attemptDelays = () => linesContaining(entries, 'Docker event stream reconnect attempt')
+    .map((entry) => Number(/ in (\d+) ms /.exec(entry.text)[1]));
+
+  await monitor.startWatching();
+  await waitFor(() => reconnectedLines().length === 1, 2000, 'the first connection');
+  state.streams[0].end();
+  await waitFor(() => reconnectedLines().length === 2, 2000, 'the connection after a short-lived one');
+
+  // Holding the connection for longer than stableConnectionMs is the precondition itself.
+  await sleep(timings.stableConnectionMs + 50);
+  state.streams[1].end();
+  await waitFor(() => attemptDelays().length === 4, 2000, 'the reconnect after a stable connection');
+
+  assert.deepEqual(attemptDelays(), [15, 30, 60, 15]);
 });
 
 test('a stream that dies during its re-list is not a recovery', async (t) => {

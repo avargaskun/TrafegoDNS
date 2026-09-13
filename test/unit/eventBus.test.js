@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventBus } = require('../../src/events/EventBus');
 const EventTypes = require('../../src/events/EventTypes');
+const { describeError } = require('../../src/utils/errors');
 const { captureLogs } = require('../helpers/logCapture');
 const { waitFor } = require('../helpers/waitFor');
 
@@ -49,7 +50,7 @@ test('a throwing or rejecting subscriber is logged sanitised and does not stop t
   }
 
   await new Promise(setImmediate);
-  assert.deepEqual(unhandled, []);
+  assert.equal(unhandled.length, 0, unhandled.map(describeError).join('; '));
 });
 
 test('unsubscribing removes the wrapped handler', (t) => {

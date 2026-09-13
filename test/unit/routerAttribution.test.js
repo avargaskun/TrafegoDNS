@@ -214,6 +214,7 @@ test('the entrypoint split applies only to single-entrypoint routers whose own l
   const foo = container('foo', { 'traefik.enable': 'true', 'traefik.http.routers.foo.rule': 'Host(`foo.example.com`)' });
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['https']), [foo], cfg).owner.name, 'foo');
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['http', 'https']), [foo], cfg).owner, null);
+  assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['https', 'http']), [foo], cfg).owner, null);
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['web']), [foo], cfg).owner, null);
 
   const splitDefault = container('bar', { 'traefik.enable': 'true' });
