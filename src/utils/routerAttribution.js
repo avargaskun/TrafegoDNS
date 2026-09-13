@@ -12,6 +12,17 @@ function isCandidate(container, cfg) {
   return String(labelsOf(container)[`${cfg.traefikLabelPrefix}enable`]).toLowerCase() === 'true';
 }
 
+function isFallbackCandidate(container, cfg) {
+  return labelsOf(container)[`${cfg.traefikLabelPrefix}enable`] === undefined;
+}
+
+function candidatePools(containers, cfg) {
+  return {
+    strict: containers.filter((c) => isCandidate(c, cfg)),
+    fallback: containers.filter((c) => isFallbackCandidate(c, cfg))
+  };
+}
+
 function hasLabelWithPrefix(container, prefix) {
   const lowered = prefix.toLowerCase();
   return Object.keys(labelsOf(container)).some((key) => key.toLowerCase().startsWith(lowered));
@@ -92,6 +103,15 @@ function findRouterOwner(ref, candidates, cfg) {
   return noOwner('no-owner');
 }
 
+// The strict pass runs to completion first, so a later strict step still beats an earlier fallback step.
+function resolveRouterOwner(ref, pools, cfg) {
+  const strict = findRouterOwner(ref, pools.strict, cfg);
+  if (strict.owner || strict.ambiguous) return { ...strict, via: 'strict' };
+  const fallback = findRouterOwner(ref, pools.fallback, cfg);
+  if (fallback.owner || fallback.ambiguous) return { ...fallback, via: 'fallback' };
+  return { ...strict, via: null };
+}
+
 function resolveHostnameLabels(hostnameRouters, containers, cfg) {
   const { traefikLabelPrefix: tp, genericLabelPrefix: gp, dnsLabelPrefix: pp } = cfg;
   const candidates = containers.filter((c) => isCandidate(c, cfg));
@@ -146,9 +166,12 @@ function resolveHostnameLabels(hostnameRouters, containers, cfg) {
 module.exports = {
   normalizeTraefikName,
   isCandidate,
+  isFallbackCandidate,
+  candidatePools,
   hasRouterLabels,
   hasAnyHttpRouterLabels,
   defaultRouterNames,
   findRouterOwner,
+  resolveRouterOwner,
   resolveHostnameLabels
 };
