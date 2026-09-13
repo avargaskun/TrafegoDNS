@@ -370,3 +370,43 @@ test('a fallback-attributed router is logged at INFO once until it no longer app
   assert.equal(linesAt(logs.entries, 'INFO', `${prefix}legacy-2 (no traefik.enable label)`).length, 1);
   assert.equal(linesAt(logs.entries, 'INFO', prefix).length, 3);
 });
+
+test('a skipped or failed poll does not re-log a fallback-attributed router', async (t) => {
+  const logs = captureLogs(t);
+  const { bus, monitor, routersUpdated, errors } = createMonitor(t);
+  let failNext = false;
+  t.mock.method(monitor, 'getRouters', async () => {
+    if (failNext) {
+      failNext = false;
+      throw new Error('Request failed with status code 502');
+    }
+    return [router('legacy@docker', 'legacy.example.com')];
+  });
+  const line = 'Router legacy@docker attributed to container legacy (no traefik.enable label)';
+
+  setContainers(bus, [container('legacy', { 'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)', 'dns.manage': 'true' })]);
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+  assert.equal(routersUpdated.length, 1);
+
+  monitor.dockerMonitor = { refreshLabels: async () => ({ ok: false, error: new Error('unreachable') }), hasLoadedLabels: () => false };
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'WARN', SKIP_LINE).length, 1);
+  assert.equal(routersUpdated.length, 1);
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+
+  monitor.dockerMonitor = null;
+  await monitor.pollTraefikAPI();
+  assert.equal(routersUpdated.length, 2);
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+
+  failNext = true;
+  await monitor.pollTraefikAPI();
+  assert.deepEqual(errors, [{ source: 'TraefikMonitor.pollTraefikAPI', error: 'Request failed with status code 502' }]);
+  assert.equal(routersUpdated.length, 2);
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+
+  await monitor.pollTraefikAPI();
+  assert.equal(routersUpdated.length, 3);
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+});
