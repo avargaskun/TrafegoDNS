@@ -6,6 +6,10 @@ const { ConfigManager } = require('./config');
 const { DNSManager, TraefikMonitor, DockerMonitor, StatusReporter, DirectDNSManager } = require('./services');
 const { EventBus } = require('./events/EventBus');
 const logger = require('./utils/logger');
+const { describeError } = require('./utils/errors');
+const { installProcessGuards } = require('./utils/processGuards');
+
+installProcessGuards();
 
 /**
  * Application startup
@@ -40,21 +44,21 @@ async function start() {
     // Display startup configuration
     await statusReporter.displaySettings();
     
-    // Initialize all services
-    await dnsManager.init();
-    await monitor.init();
-    
-    // Start monitoring
+    // Start Docker monitoring first; it never rejects and keeps retrying in the background
     if (config.watchDockerEvents) {
       await dockerMonitor.startWatching();
     }
+    
+    // Initialize all services
+    await dnsManager.init();
+    await monitor.init();
     
     // Start main polling
     await monitor.startPolling();
     
     logger.complete('TráfegoDNS running successfully');
   } catch (error) {
-    logger.error(`Failed to start TráfegoDNS: ${error.message}`);
+    logger.error(`Failed to start TráfegoDNS: ${describeError(error)}`);
     process.exit(1);
   }
 }

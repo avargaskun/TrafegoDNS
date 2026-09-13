@@ -1,11 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const TraefikMonitor = require('../../src/services/TraefikMonitor');
+const CloudflareProvider = require('../../src/providers/cloudflare/provider');
 const { EventBus } = require('../../src/events/EventBus');
 const EventTypes = require('../../src/events/EventTypes');
 const { makeConfig } = require('../helpers/config');
 const { captureLogs } = require('../helpers/logCapture');
 const { startFakeTraefik } = require('../helpers/fakeTraefik');
+const { startFakeCloudflare } = require('../helpers/fakeCloudflare');
 
 function routers(count) {
   return Array.from({ length: count }, (_, i) => ({
@@ -76,4 +78,120 @@ test('a refused connection keeps the Traefik-specific error message', async (t) 
   await assert.rejects(monitor.getRouters(), {
     message: 'Connection refused to Traefik API at http://127.0.0.1:1/api. Is Traefik running?'
   });
+});
+
+function dnsRecords(count) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `rec-${i}`,
+    type: 'CNAME',
+    name: `r${i}.example.com`,
+    content: 'example.com',
+    proxied: true,
+    ttl: 1
+  }));
+}
+
+async function setupCloudflare(t, count) {
+  captureLogs(t);
+  const cloudflare = await startFakeCloudflare({ records: dnsRecords(count) });
+  const provider = new CloudflareProvider(makeConfig());
+  provider.client.defaults.baseURL = cloudflare.baseURL;
+  t.after(() => cloudflare.stop());
+  return { cloudflare, provider };
+}
+
+function recordPageRequests(cloudflare) {
+  return cloudflare.requests
+    .filter((request) => request.method === 'GET' && request.path.endsWith('/zones/zone-1/dns_records'))
+    .map((request) => request.query);
+}
+
+function rejectionOf(promise) {
+  return promise.then(() => null, (error) => error);
+}
+
+test('Cloudflare records are cached across every page', async (t) => {
+  const { cloudflare, provider } = await setupCloudflare(t, 250);
+
+  await provider.init();
+
+  assert.equal(provider.recordCache.records.length, 250);
+  assert.deepEqual(provider.recordCache.records.map((r) => r.id), dnsRecords(250).map((r) => r.id));
+  assert.deepEqual(recordPageRequests(cloudflare), [
+    { per_page: '100', page: '1' },
+    { per_page: '100', page: '2' },
+    { per_page: '100', page: '3' }
+  ]);
+});
+
+test('an exact multiple of the Cloudflare page size takes no extra request', async (t) => {
+  const { cloudflare, provider } = await setupCloudflare(t, 200);
+
+  await provider.init();
+
+  assert.equal(provider.recordCache.records.length, 200);
+  assert.equal(recordPageRequests(cloudflare).length, 2);
+});
+
+test('an empty Cloudflare zone takes a single record request', async (t) => {
+  const { cloudflare, provider } = await setupCloudflare(t, 0);
+
+  await provider.init();
+
+  assert.deepEqual(provider.recordCache.records, []);
+  assert.equal(recordPageRequests(cloudflare).length, 1);
+});
+
+test('a failed Cloudflare page rejects the refresh and keeps the previous cache', async (t) => {
+  const { cloudflare, provider } = await setupCloudflare(t, 250);
+  await provider.init();
+  const previous = provider.recordCache;
+  cloudflare.setRecords(dnsRecords(251));
+  cloudflare.failPage(2);
+
+  const error = await rejectionOf(provider.refreshRecordCache());
+
+  assert.ok(error, 'refreshRecordCache() should reject');
+  assert.equal(error.response?.status, 500);
+  assert.equal(provider.recordCache, previous);
+  assert.equal(provider.recordCache.records.length, 250);
+  assert.equal(recordPageRequests(cloudflare).length, 5);
+
+  cloudflare.failPage(null);
+  await provider.refreshRecordCache();
+
+  assert.equal(provider.recordCache.records.length, 251);
+});
+
+function stubbedRecordPages(t, pages) {
+  captureLogs(t);
+  const provider = new CloudflareProvider(makeConfig());
+  const pageRequests = [];
+  t.mock.method(provider.client, 'get', async (url, { params }) => {
+    if (url === '/zones') return { data: { result: [{ id: 'zone-1', name: params.name }] } };
+    pageRequests.push(params.page);
+    return { data: pages[params.page - 1] };
+  });
+  return { provider, pageRequests };
+}
+
+test('an empty Cloudflare page ends the listing even when total_pages promises more', async (t) => {
+  const { provider, pageRequests } = stubbedRecordPages(t, [
+    { result: dnsRecords(100), result_info: { total_pages: 5 } },
+    { result: [], result_info: { total_pages: 5 } }
+  ]);
+
+  await provider.init();
+
+  assert.deepEqual(pageRequests, [1, 2]);
+  assert.equal(provider.recordCache.records.length, 100);
+});
+
+test('a Cloudflare response without result_info is treated as the only page', async (t) => {
+  const { provider, pageRequests } = stubbedRecordPages(t, [{ result: dnsRecords(100) }]);
+
+  await provider.init();
+
+  assert.deepEqual(pageRequests, [1]);
+  assert.equal(provider.recordCache.records.length, 100);
 });
