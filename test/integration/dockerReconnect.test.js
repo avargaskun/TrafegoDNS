@@ -229,7 +229,7 @@ test('a connection that outlives connectTimeoutMs is not aborted by the connect 
 });
 
 test('an /events request that never answers is aborted after connectTimeoutMs, WARNed once, and recovered', async (t) => {
-  const connectTimeoutMs = 100;
+  const connectTimeoutMs = 250;
   const { daemon, logs, faults, monitor } = await setup(t, { timings: { connectTimeoutMs } });
   daemon.setEventsMode('hang');
 
@@ -240,7 +240,7 @@ test('an /events request that never answers is aborted after connectTimeoutMs, W
 
   const warns = warnings(logs.entries);
   assert.equal(warns.length, 1, warns.map((entry) => entry.text).join('\n'));
-  assert.match(warns[0].text, /Docker is unreachable \(connect timed out after 100 ms\); continuing and retrying in the background$/);
+  assert.match(warns[0].text, new RegExp(`Docker is unreachable \\(connect timed out after ${connectTimeoutMs} ms\\); continuing and retrying in the background$`));
   assert.ok(daemon.stats.eventsConnections >= 1);
   assert.equal(daemon.stats.listRequests, 0);
   assert.equal(monitor.hasLoadedLabels(), false);

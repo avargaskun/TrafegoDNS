@@ -119,6 +119,11 @@ test('(g) a failing, then hanging, container list keeps the last good cache and 
   await waitFor(() => dnsUpdates.length >= 1, 2000, 'the first DNS pass');
   await waitFor(() => daemon.openEventStreams() === 1, 2000, 'the event stream to open');
   assert.deepEqual(dnsUpdates[0].processedHostnames, ['proxy.example.com']);
+  // The short refresh timeout also bounds the boot listings, which may time out under CPU load before one succeeds.
+  const lastBootRefresh = logs.entries.filter((entry) => entry.text.includes('Docker labels refreshed') || entry.text.includes(REFRESH_FAILURE)).at(-1);
+  assert.match(lastBootRefresh.text, /Docker labels refreshed/, 'boot ends on a good refresh');
+  const refreshWarnsAtBoot = entriesAt(logs, 'WARN', REFRESH_FAILURE).length;
+  const warnsAtBoot = logs.entries.filter((entry) => entry.level === 'WARN').length;
   const goodContainers = structuredClone(dockerMonitor.getContainers());
   const goodProxyLabels = structuredClone(routerUpdates.at(-1).containerLabels['proxy.example.com']);
   assert.equal(goodProxyLabels['dns.manage'], 'true');
@@ -141,8 +146,10 @@ test('(g) a failing, then hanging, container list keeps the last good cache and 
   assert.equal(daemon.stats.listRequests, listBefore + 1);
   assert.equal(entriesAt(logs, 'DEBUG', `${REFRESH_FAILURE} (trigger=poll): timed out after ${REFRESH_TIMEOUT_MS} ms;`).length, 1);
   assert.deepEqual(dockerMonitor.getContainers(), goodContainers);
-  assert.equal(entriesAt(logs, 'WARN', REFRESH_FAILURE).length, 1);
-  assert.equal(logs.entries.filter((entry) => entry.level === 'WARN').length, 1);
+  assert.equal(entriesAt(logs, 'WARN', `${REFRESH_FAILURE} (trigger=event)`).length, 1);
+  assert.equal(entriesAt(logs, 'WARN', `${REFRESH_FAILURE} (trigger=poll)`).length, 0);
+  assert.equal(entriesAt(logs, 'WARN', REFRESH_FAILURE).length, refreshWarnsAtBoot + 1);
+  assert.equal(logs.entries.filter((entry) => entry.level === 'WARN').length, warnsAtBoot + 1);
 
   assert.equal(routerUpdates.length, updatesBefore + 1);
   const update = routerUpdates.at(-1);
