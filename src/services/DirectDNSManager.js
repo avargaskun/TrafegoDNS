@@ -37,7 +37,7 @@ class DirectDNSManager {
       this.lastDockerLabels = containerLabelsCache || {};
       
       // If labels changed, trigger a poll immediately
-      if (hasChanges) {
+      if (hasChanges && this.pollTimer) {
         logger.debug('Container labels changed, triggering DNS refresh');
         this.pollContainers();
       } else {
@@ -93,6 +93,7 @@ class DirectDNSManager {
     this.isPolling = true;
     
     try {
+      if (this.dockerMonitor && this.config.watchDockerEvents) await this.dockerMonitor.refreshLabels('poll');
       // Publish poll started event - use same event names as TraefikMonitor
       // for compatibility with the rest of the system
       this.eventBus.publish(EventTypes.TRAEFIK_POLL_STARTED);
