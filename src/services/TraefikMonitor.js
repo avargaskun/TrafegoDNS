@@ -46,6 +46,7 @@ class TraefikMonitor {
     this.labelsGateWarned = false;
     this.warnedAmbiguousRouters = new Set();
     this.warnedOwnerConflicts = new Set();
+    this.loggedFallbackRouters = new Map();
     
     // Reference to DockerMonitor (will be set from app.js)
     this.dockerMonitor = null;
@@ -169,10 +170,11 @@ class TraefikMonitor {
       
       // Collect hostname data
       const { hostnames, hostnameRouters } = this.processRouters(routers);
-      const { containerLabels, excludedHostnames, ambiguousRouters, ownerConflicts, owners } =
+      const { containerLabels, excludedHostnames, ambiguousRouters, ownerConflicts, owners, fallbackRouters } =
         resolveHostnameLabels(hostnameRouters, this.lastContainers, this.config);
       
       this.reportAttributionIssues(ambiguousRouters, ownerConflicts);
+      this.reportFallbackRouters(fallbackRouters);
       this.logProxiedChanges(containerLabels, owners);
       
       const managedCandidates = hostnames.filter((hostname) => !excludedHostnames.has(hostname));
@@ -300,6 +302,17 @@ class TraefikMonitor {
       }
     }
     this.warnedOwnerConflicts = conflictsNow;
+  }
+
+  reportFallbackRouters(fallbackRouters) {
+    const current = new Map();
+    for (const { routerName, ownerName } of fallbackRouters) {
+      current.set(routerName, ownerName);
+      if (this.loggedFallbackRouters.get(routerName) !== ownerName) {
+        logger.info(`Router ${routerName} attributed to container ${ownerName} (no ${this.config.traefikLabelPrefix}enable label)`);
+      }
+    }
+    this.loggedFallbackRouters = current;
   }
   
   logProxiedChanges(containerLabels, owners) {

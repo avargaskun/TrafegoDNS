@@ -11,6 +11,7 @@ installExitWatchdog();
 const PRESEEDED = ['app.example.com', 'watcher.example.com', 'traefik.example.com'];
 const SEED_RECORDS = PRESEEDED.map((name) => ({ type: 'CNAME', name, content: 'example.com', proxied: true, ttl: 1 }));
 const AMBIGUITY_WARN = 'Router shared@docker is claimed by containers left, right with different DNS labels; leaving its hostnames unmanaged';
+const FALLBACK_INFO = 'Router legacy@docker attributed to container legacy (no traefik.enable label)';
 
 const names = (records) => records.map((record) => record.name).sort();
 
@@ -63,4 +64,6 @@ test('(i) the golden set runs end to end: exact managed set, no writes for corre
   const managing = logs.entries.filter((entry) => entry.level === 'INFO' && /Managing \d+ hostnames/.test(entry.text));
   assert.equal(managing.length, 1, managing.map((entry) => entry.text).join('\n'));
   assert.ok(managing[0].text.endsWith(`Managing ${golden.expectedManagedHostnames.length} hostnames`));
+  const fallbackInfos = logs.entries.filter((entry) => entry.level === 'INFO' && entry.text.endsWith(FALLBACK_INFO));
+  assert.equal(fallbackInfos.length, 1, fallbackInfos.map((entry) => entry.text).join('\n'));
 });

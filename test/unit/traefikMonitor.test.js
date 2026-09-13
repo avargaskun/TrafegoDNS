@@ -340,3 +340,33 @@ test('proxied label changes are logged at INFO with the owning container name on
   assert.equal(linesAt(logs.entries, 'INFO', proxied).length, 1);
   assert.equal(linesAt(logs.entries, 'INFO', 'DNS label changes detected for 1 hostnames: app.example.com (proxied)').length, 1);
 });
+
+test('a fallback-attributed router is logged at INFO once until it no longer applies', async (t) => {
+  const logs = captureLogs(t);
+  const { bus, monitor, routersUpdated } = createMonitor(t);
+  t.mock.method(monitor, 'getRouters', async () => [router('legacy@docker', 'legacy.example.com')]);
+  const legacyLabels = { 'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)', 'dns.manage': 'true' };
+  const prefix = 'Router legacy@docker attributed to container ';
+  const line = `${prefix}legacy (no traefik.enable label)`;
+
+  setContainers(bus, [container('legacy', legacyLabels)]);
+  await monitor.pollTraefikAPI();
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+  assert.equal(routersUpdated.length, 2);
+  for (const data of routersUpdated) assert.equal(data.containerLabels['legacy.example.com']['dns.manage'], 'true');
+
+  setContainers(bus, [container('legacy', { ...legacyLabels, 'traefik.enable': 'true' })]);
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
+  assert.equal(routersUpdated[2].containerLabels['legacy.example.com']['dns.manage'], 'true');
+
+  setContainers(bus, [container('legacy', legacyLabels)]);
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'INFO', line).length, 2);
+
+  setContainers(bus, [container('legacy-2', legacyLabels)]);
+  await monitor.pollTraefikAPI();
+  assert.equal(linesAt(logs.entries, 'INFO', `${prefix}legacy-2 (no traefik.enable label)`).length, 1);
+  assert.equal(linesAt(logs.entries, 'INFO', prefix).length, 3);
+});
