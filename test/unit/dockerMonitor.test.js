@@ -503,6 +503,28 @@ test('a live connection keeps its signal past connectTimeoutMs, and stopWatching
   assert.equal(state.eventsCalls.length, 1);
 });
 
+test('a getEvents that never answers is aborted after connectTimeoutMs, so startWatching resolves and retries', async (t) => {
+  const { entries } = captureLogs(t);
+  const timings = { ...FAST_TIMINGS, connectTimeoutMs: 50 };
+  const { monitor, state } = createHarness({ timings });
+  state.events = hangUntilAborted;
+  t.after(() => monitor.stopWatching());
+
+  let settled = false;
+  const booted = monitor.startWatching().finally(() => { settled = true; });
+  await waitFor(() => settled, timings.connectTimeoutMs + 1000, 'startWatching to resolve despite the hanging getEvents');
+  await booted;
+
+  assert.equal(state.eventsCalls[0].abortSignal.aborted, true);
+  const warns = entries.filter((entry) => entry.level === 'WARN');
+  assert.equal(warns.length, 1);
+  assert.match(warns[0].text, /Docker is unreachable \(.+\); continuing and retrying in the background$/);
+  await waitFor(() => state.eventsCalls.length >= 2, 2000, 'a reconnect attempt');
+  assert.equal(linesContaining(entries, 'Docker event stream reconnect attempt 1 in').length, 1);
+  assert.equal(state.listCalls.length, 0);
+  assert.equal(monitor.hasLoadedLabels(), false);
+});
+
 test('a getEvents that resolves after stopWatching is destroyed and never re-listed', async (t) => {
   const { entries } = captureLogs(t);
   const { monitor, state } = createHarness({ timings: FAST_TIMINGS });

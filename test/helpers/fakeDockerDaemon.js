@@ -19,7 +19,7 @@ const NOISE_EXEC_ID = 'e'.repeat(64);
  */
 
 /**
- * @typedef {'ok' | 'refuse'} EventsMode
+ * @typedef {'ok' | 'refuse' | 'hang'} EventsMode
  */
 
 /**
@@ -30,7 +30,7 @@ const NOISE_EXEC_ID = 'e'.repeat(64);
 
 /**
  * @typedef {Object} FakeDockerDaemonStats
- * @property {number} eventsConnections - Total `/events` requests received, refused ones included.
+ * @property {number} eventsConnections - Total `/events` requests received, refused and hanging ones included.
  * @property {number} listRequests - Total `/containers/json` requests received, failed and hanging ones included.
  * @property {number} eventsSent - Total events written, counted once per receiving `/events` response.
  */
@@ -46,7 +46,7 @@ const NOISE_EXEC_ID = 'e'.repeat(64);
  * @property {() => void} endCleanly - Ends every open `/events` response.
  * @property {() => void} endMidObject - Writes half an event, then ends every open `/events` response.
  * @property {(mode: ContainersMode) => void} setContainersMode - `fail` answers 500; `hang` never answers until `stop()`.
- * @property {(mode: EventsMode) => void} setEventsMode - `refuse` answers `/events` with 500.
+ * @property {(mode: EventsMode) => void} setEventsMode - `refuse` answers `/events` with 500; `hang` never sends headers until the client aborts or `stop()`.
  * @property {() => Promise<void>} stop - Closes the server and destroys every socket.
  * @property {() => Promise<void>} restart - Listens again on the same port.
  * @property {() => number} openEventStreams - Number of `/events` responses currently open.
@@ -166,6 +166,7 @@ async function startFakeDockerDaemon({ apiVersion = 1.54, seed = 1 } = {}) {
 
   function handleEvents(req, res, version) {
     stats.eventsConnections++;
+    if (eventsMode === 'hang') return;
     if (eventsMode === 'refuse') {
       sendJson(res, 500, { message: 'synthetic events refusal' });
       return;
