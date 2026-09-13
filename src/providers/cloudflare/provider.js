@@ -8,6 +8,9 @@ const logger = require('../../utils/logger');
 const { convertToCloudflareFormat } = require('./converter');
 const { validateRecord } = require('./validator');
 
+const RECORDS_PER_PAGE = 100;
+const MAX_RECORD_PAGES = 1000;
+
 class CloudflareProvider extends DNSProvider {
   constructor(config) {
     super(config);
@@ -82,48 +85,40 @@ class CloudflareProvider extends DNSProvider {
         return;
       }
       
-      // Get all records for the zone in one API call
       logger.trace(`CloudflareProvider.refreshRecordCache: Fetching records for zone ${this.zoneId}`);
       
-      const response = await this.client.get(`/zones/${this.zoneId}/dns_records`, {
-        params: { per_page: 100 } // Get as many records as possible in one request
-      });
+      const records = [];
+      let totalPages = 1;
+      
+      for (let page = 1; page <= totalPages && page <= MAX_RECORD_PAGES; page++) {
+        if (page > 1) {
+          logger.debug(`Fetching additional DNS records page from Cloudflare (page ${page})`);
+        }
+        
+        const response = await this.client.get(`/zones/${this.zoneId}/dns_records`, {
+          params: { per_page: RECORDS_PER_PAGE, page }
+        });
+        
+        const pageRecords = response.data.result || [];
+        logger.trace(`CloudflareProvider.refreshRecordCache: Received ${pageRecords.length} records from page ${page}`);
+        
+        if (pageRecords.length === 0) {
+          break;
+        }
+        
+        records.push(...pageRecords);
+        totalPages = response.data.result_info?.total_pages ?? 1;
+      }
       
       const oldRecordCount = this.recordCache.records.length;
       
       this.recordCache = {
-        records: response.data.result,
+        records,
         lastUpdated: Date.now()
       };
       
       logger.debug(`Cached ${this.recordCache.records.length} DNS records from Cloudflare`);
       logger.trace(`CloudflareProvider.refreshRecordCache: Cache updated from ${oldRecordCount} to ${this.recordCache.records.length} records`);
-      
-      // If there are more records (pagination), fetch them as well
-      let nextPage = response.data.result_info?.next_page_url;
-      let pageCount = 1;
-      
-      while (nextPage) {
-        pageCount++;
-        logger.debug(`Fetching additional DNS records page from Cloudflare (page ${pageCount})`);
-        logger.trace(`CloudflareProvider.refreshRecordCache: Fetching pagination URL: ${nextPage}`);
-        
-        const pageResponse = await axios.get(nextPage, {
-          headers: this.client.defaults.headers
-        });
-        
-        const newRecords = pageResponse.data.result;
-        logger.trace(`CloudflareProvider.refreshRecordCache: Received ${newRecords.length} additional records from page ${pageCount}`);
-        
-        this.recordCache.records = [
-          ...this.recordCache.records,
-          ...newRecords
-        ];
-        
-        nextPage = pageResponse.data.result_info?.next_page_url;
-      }
-      
-      logger.debug(`DNS record cache now contains ${this.recordCache.records.length} records`);
       
       // In TRACE mode, output the entire cache for debugging
       if (logger.level >= 4) { // TRACE level

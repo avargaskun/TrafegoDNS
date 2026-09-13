@@ -83,6 +83,30 @@ function getLabelValue(labels, genericPrefix, providerPrefix, key, defaultValue)
 }
 
 /**
+ * Collect the DNS labels of a container: provider-specific keys first, then generic keys
+ * that are not under the provider prefix
+ * @param {Object} labels - Container labels
+ * @param {string} genericPrefix - Generic label prefix
+ * @param {string} providerPrefix - Provider-specific label prefix
+ * @returns {Object} - New object holding only the DNS labels
+ */
+function extractDnsLabels(labels, genericPrefix, providerPrefix) {
+  const dnsLabels = {};
+  const entries = Object.entries(labels || {});
+  for (const [key, value] of entries) {
+    if (key.startsWith(providerPrefix)) {
+      dnsLabels[key] = value;
+    }
+  }
+  for (const [key, value] of entries) {
+    if (key.startsWith(genericPrefix) && !key.startsWith(providerPrefix)) {
+      dnsLabels[key] = value;
+    }
+  }
+  return dnsLabels;
+}
+
+/**
  * Get the minimum TTL value for a specific DNS provider
  * @param {string} provider - The DNS provider name
  * @returns {number} - The minimum TTL value in seconds
@@ -285,5 +309,6 @@ module.exports = {
   isApexDomain,
   extractDnsConfigFromLabels,
   getLabelValue,
+  extractDnsLabels,
   getMinimumTTL
 };

@@ -7,6 +7,12 @@ const logger = require('../utils/logger');
 const EventTypes = require('../events/EventTypes');
 const { extractHostnamesFromRule } = require('../utils/traefik');
 const { getLabelValue } = require('../utils/dns');
+const { SingleFlight } = require('../utils/singleFlight');
+const { resolveHostnameLabels } = require('../utils/routerAttribution');
+
+const ROUTERS_PER_PAGE = 100;
+const MAX_ROUTER_PAGES = 100;
+const LABELS_NOT_LOADED = 'Skipping DNS pass: Docker container labels have not been loaded yet';
 
 class TraefikMonitor {
   constructor(config, eventBus) {
@@ -32,20 +38,17 @@ class TraefikMonitor {
       hostnameCount: 0
     };
     
-    // Lock to prevent parallel polling
-    this.isPolling = false;
-    
     // Poll timer reference
     this.pollTimer = null;
     
-    // Cache for the last seen container labels from Docker service
-    this.lastDockerLabels = {};
+    this.pollRunner = new SingleFlight((trigger) => this.runPoll(trigger));
+    this.lastContainers = [];
+    this.labelsGateWarned = false;
+    this.warnedAmbiguousRouters = new Set();
+    this.warnedOwnerConflicts = new Set();
     
     // Reference to DockerMonitor (will be set from app.js)
     this.dockerMonitor = null;
-    
-    // Last container ID to name mapping
-    this.lastContainerIdToName = new Map();
     
     // Subscribe to Docker label updates
     this.setupEventSubscriptions();
@@ -79,12 +82,13 @@ class TraefikMonitor {
   setupEventSubscriptions() {
     // Subscribe to Docker label updates
     this.eventBus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => {
-      const { containerLabelsCache, containerIdToName } = data;
-      
-      // Update our cache of Docker labels
-      this.lastDockerLabels = containerLabelsCache || {};
-      this.lastContainerIdToName = containerIdToName || new Map();
+      this.lastContainers = data.containers || [];
       logger.debug('Updated Docker container labels cache in TraefikMonitor');
+      
+      if (this.pollTimer && (data.trigger === 'event' || data.trigger === 'reconnect')) {
+        return this.requestPoll(data.trigger);
+      }
+      return undefined;
     });
   }
   
@@ -93,10 +97,10 @@ class TraefikMonitor {
    */
   async startPolling() {
     // Perform initial poll
-    await this.pollTraefikAPI();
+    await this.requestPoll('startup');
     
     // Set up interval for regular polling
-    this.pollTimer = setInterval(() => this.pollTraefikAPI(), this.config.pollInterval);
+    this.pollTimer = setInterval(() => this.requestPoll('interval'), this.config.pollInterval);
     
     logger.debug(`Traefik polling started with interval of ${this.config.pollInterval}ms`);
     return true;
@@ -128,57 +132,76 @@ class TraefikMonitor {
   }
   
   /**
+   * Request a poll; a request made while a poll is running is served by one trailing poll
+   */
+  requestPoll(trigger) {
+    return this.pollRunner.run(trigger);
+  }
+  
+  /**
    * Poll the Traefik API for routers
    */
-  async pollTraefikAPI() {
-    // Skip if already polling to prevent parallel execution
-    if (this.isPolling) {
-      logger.debug('Skipping poll - another poll cycle is already in progress');
-      return;
-    }
-    
-    // Set polling lock
-    this.isPolling = true;
-    
+  pollTraefikAPI(trigger = 'interval') {
+    return this.requestPoll(trigger);
+  }
+  
+  async runPoll(trigger) {
     try {
       // Publish poll started event
       this.eventBus.publish(EventTypes.TRAEFIK_POLL_STARTED);
       
-      logger.debug('Polling Traefik API for routers...');
+      logger.debug(`Polling Traefik API for routers (trigger=${trigger})...`);
       
       // Get all routers from Traefik
       const routers = await this.getRouters();
-      logger.debug(`Found ${Object.keys(routers).length} routers in Traefik`);
+      logger.debug(`Found ${routers.length} routers in Traefik`);
+      
+      if (this.dockerMonitor && this.config.watchDockerEvents) {
+        await this.dockerMonitor.refreshLabels('poll');
+        if (!this.dockerMonitor.hasLoadedLabels()) {
+          if (this.labelsGateWarned) {
+            logger.debug(LABELS_NOT_LOADED);
+          } else {
+            logger.warn(LABELS_NOT_LOADED);
+            this.labelsGateWarned = true;
+          }
+          return;
+        }
+      }
       
       // Collect hostname data
-      const { hostnames, containerLabels } = this.processRouters(routers);
+      const { hostnames, hostnameRouters } = this.processRouters(routers);
+      const { containerLabels, excludedHostnames, ambiguousRouters, ownerConflicts, owners } =
+        resolveHostnameLabels(hostnameRouters, this.lastContainers, this.config);
+      
+      this.reportAttributionIssues(ambiguousRouters, ownerConflicts);
+      this.logProxiedChanges(containerLabels, owners);
+      
+      const managedCandidates = hostnames.filter((hostname) => !excludedHostnames.has(hostname));
       
       // Only log hostname count if it changed from previous poll
-      const hasChanged = this.previousStats.hostnameCount !== hostnames.length;
+      const hasChanged = this.previousStats.hostnameCount !== managedCandidates.length;
       
       if (hasChanged) {
-        logger.info(`Processing ${hostnames.length} hostnames for DNS management`);
+        logger.info(`Processing ${managedCandidates.length} hostnames for DNS management`);
       } else {
         // Log at debug level instead of info when nothing has changed
-        logger.debug(`Processing ${hostnames.length} hostnames for DNS management`);
+        logger.debug(`Processing ${managedCandidates.length} hostnames for DNS management`);
       }
       
       // Update the previous count for next comparison
-      this.previousStats.hostnameCount = hostnames.length;
-      
-      // Merge router labels with Docker container labels
-      const mergedLabels = this.mergeContainerLabels(containerLabels, this.lastDockerLabels);
+      this.previousStats.hostnameCount = managedCandidates.length;
       
       // Publish router update event
       this.eventBus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, {
-        hostnames,
-        containerLabels: mergedLabels
+        hostnames: managedCandidates,
+        containerLabels
       });
       
       // Publish poll completed event
       this.eventBus.publish(EventTypes.TRAEFIK_POLL_COMPLETED, {
-        routerCount: Object.keys(routers).length,
-        hostnameCount: hostnames.length
+        routerCount: routers.length,
+        hostnameCount: managedCandidates.length
       });
     } catch (error) {
       logger.error(`Error polling Traefik API: ${error.message}`);
@@ -187,9 +210,6 @@ class TraefikMonitor {
         source: 'TraefikMonitor.pollTraefikAPI',
         error: error.message
       });
-    } finally {
-      // Always release the polling lock
-      this.isPolling = false;
     }
   }
   
@@ -198,8 +218,17 @@ class TraefikMonitor {
    */
   async getRouters() {
     try {
-      const response = await this.client.get('/http/routers');
-      return response.data;
+      let page = 1;
+      const routers = [];
+      for (let i = 0; i < MAX_ROUTER_PAGES; i++) {
+        const response = await this.client.get('/http/routers', { params: { page, per_page: ROUTERS_PER_PAGE } });
+        routers.push(...(Array.isArray(response.data) ? response.data : Object.values(response.data || {})));
+        const next = parseInt(response.headers?.['x-next-page'], 10);
+        // Traefik v3.7 pkg/api/criterion.go:90-114: X-Next-Page wraps to 1 on the last page.
+        if (!Number.isInteger(next) || next <= page) break;
+        page = next;
+      }
+      return routers;
     } catch (error) {
       // Check for specific error types for better error messages
       if (error.code === 'ECONNREFUSED') {
@@ -218,42 +247,64 @@ class TraefikMonitor {
   }
   
   /**
-   * Process routers to extract hostnames and container labels
+   * Process routers to extract unique hostnames and the routers serving each hostname
    */
   processRouters(routers) {
     const hostnames = [];
-    const containerLabels = {};
+    const hostnameRouters = new Map();
+    const list = Array.isArray(routers) ? routers : Object.values(routers || {});
     
-    for (const [_, router] of Object.entries(routers)) {
+    for (const router of list) {
       const routerName = router.name;
       if (router.rule && router.rule.includes('Host')) {
         // Extract all hostnames from the rule
         const routerHostnames = extractHostnamesFromRule(router.rule);
         
         for (const hostname of routerHostnames) {
-          hostnames.push(hostname);
+          if (!hostnameRouters.has(hostname)) {
+            hostnameRouters.set(hostname, []);
+            hostnames.push(hostname);
+          }
           
-          // Store router service information with hostname for later lookup
-          containerLabels[hostname] = {
-            [`${this.config.traefikLabelPrefix}http.routers.${routerName}.service`]: router.service,
-            routerName: routerName
-          };
+          const refs = hostnameRouters.get(hostname);
+          if (!refs.some((ref) => ref.name === routerName)) {
+            refs.push({
+              name: routerName,
+              provider: router.provider,
+              entryPoints: router.entryPoints,
+              service: router.service
+            });
+          }
           
           logger.trace(`Processed router "${routerName}" for hostname "${hostname}" with service "${router.service}"`);
         }
       }
     }
     
-    return { hostnames, containerLabels };
+    return { hostnames, hostnameRouters };
   }
   
-  /**
-   * Merge router-derived labels with actual container labels
-   * This is crucial for getting the correct DNS labels from containers
-   */
-  mergeContainerLabels(routerContainerLabels, dockerLabelsCache) {
-    logger.debug('Merging router information with Docker container labels');
-    const mergedLabels = { ...routerContainerLabels };
+  reportAttributionIssues(ambiguousRouters, ownerConflicts) {
+    const ambiguousNow = new Set();
+    for (const { routerName, ownerNames } of ambiguousRouters) {
+      ambiguousNow.add(routerName);
+      if (!this.warnedAmbiguousRouters.has(routerName)) {
+        logger.warn(`Router ${routerName} is claimed by containers ${ownerNames.join(', ')} with different DNS labels; leaving its hostnames unmanaged`);
+      }
+    }
+    this.warnedAmbiguousRouters = ambiguousNow;
+    
+    const conflictsNow = new Set();
+    for (const { hostname, ownerNames, chosen } of ownerConflicts) {
+      conflictsNow.add(hostname);
+      if (!this.warnedOwnerConflicts.has(hostname)) {
+        logger.warn(`Hostname ${hostname} is managed by containers ${ownerNames.join(', ')} with different DNS labels; using ${chosen}`);
+      }
+    }
+    this.warnedOwnerConflicts = conflictsNow;
+  }
+  
+  logProxiedChanges(containerLabels, owners) {
     const genericPrefix = this.config.genericLabelPrefix;
     const providerPrefix = this.config.dnsLabelPrefix;
     
@@ -261,93 +312,35 @@ class TraefikMonitor {
     const firstPoll = !this.lastMergedLabels;
     const labelChanges = {};
     
-    // Get the container ID to name mapping from DockerMonitor
-    let containerIdToName = new Map();
-    if (this.dockerMonitor && this.dockerMonitor.containerIdToName) {
-      containerIdToName = this.dockerMonitor.containerIdToName;
-    } else if (this.lastContainerIdToName) {
-      containerIdToName = this.lastContainerIdToName;
-    }
-    
-    // For each hostname
-    for (const [hostname, routerLabels] of Object.entries(routerContainerLabels)) {
-      const routerName = routerLabels.routerName;
-      const routerNameDocker = routerName.replace(/@docker$/, "");
-      const serviceName = routerLabels[`${this.config.traefikLabelPrefix}http.routers.${routerName}.service`];
-      
-      logger.debug(`Looking for container labels for hostname=${hostname}, router=${routerName}, service=${serviceName}`);
-      
-      // Look for matching containers in the Docker labels cache
-      let matchFound = false;
-      
-      // First try by service name directly
-      for (const [containerId, containerLabels] of Object.entries(dockerLabelsCache)) {
-        // Various ways a container might be related to this router/service
-        if (
-          containerId.includes(serviceName) || 
-          containerLabels[`${this.config.traefikLabelPrefix}http.routers.${routerName}.service`] === serviceName ||
-          containerLabels[`${this.config.traefikLabelPrefix}http.routers.${routerNameDocker}.service`] === serviceName ||
-          containerLabels[`${this.config.traefikLabelPrefix}http.services.${serviceName}.loadbalancer.server.port`]
-        ) {
-          // Get container name if available
-          const containerName = containerIdToName.get(containerId) || containerId;
-          logger.debug(`Found matching container ${containerName} for hostname ${hostname}`);
-          
-          // Extract DNS-specific labels
-          const dnsLabels = {};
-          // First collect provider-specific labels
-          for (const [key, value] of Object.entries(containerLabels)) {
-            if (key.startsWith(providerPrefix)) {
-              dnsLabels[key] = value;
-            }
-          }
-          // Then collect generic DNS labels that don't conflict with provider-specific ones
-          for (const [key, value] of Object.entries(containerLabels)) {
-            if (key.startsWith(genericPrefix) && !key.startsWith(providerPrefix)) {
-              dnsLabels[key] = value;
-            }
-          }
-          
-          // Check if this is first poll or if the proxied setting has changed
-          const proxiedLabel = getLabelValue(containerLabels, genericPrefix, providerPrefix, 'proxied', null);
-          const previousLabels = this.lastMergedLabels?.[hostname];
-          const previousProxied = previousLabels?.[`${providerPrefix}proxied`] || previousLabels?.[`${genericPrefix}proxied`];
-          
-          // Only log at INFO level if this is the first poll or the proxied value has changed
-          if (firstPoll || previousProxied !== proxiedLabel) {
-            if (proxiedLabel === 'false') {
-              logger.info(`🔍 Found proxied=false for ${hostname} from container ${containerName}`);
-              // Track the change for summary
-              labelChanges[hostname] = 'unproxied';
-            } else if (proxiedLabel === 'true' && previousProxied === 'false') {
-              logger.info(`🔍 Found proxied=true for ${hostname} from container ${containerName}`);
-              // Track the change for summary
-              labelChanges[hostname] = 'proxied';
-            }
-          } else {
-            // Use debug level for repeated information
-            if (proxiedLabel === 'false') {
-              logger.debug(`Found proxied=false for ${hostname} from container ${containerName}`);
-            }
-          }
-          
-          // Merge the container's DNS labels into our hostname labels
-          mergedLabels[hostname] = {
-            ...mergedLabels[hostname],
-            ...dnsLabels
-          };
-          
-          if (Object.keys(dnsLabels).length > 0) {
-            logger.debug(`Applied DNS configuration for ${hostname}: ${JSON.stringify(dnsLabels)}`);
-          }
-          
-          matchFound = true;
-          break;
-        }
-      }
-      
-      if (!matchFound) {
+    for (const [hostname, labels] of Object.entries(containerLabels)) {
+      const containerName = owners[hostname];
+      if (!containerName) {
         logger.debug(`No container match found for hostname ${hostname}`);
+        continue;
+      }
+      logger.debug(`Found matching container ${containerName} for hostname ${hostname}`);
+      
+      // Check if this is first poll or if the proxied setting has changed
+      const proxiedLabel = getLabelValue(labels, genericPrefix, providerPrefix, 'proxied', null);
+      const previousLabels = this.lastMergedLabels?.[hostname];
+      const previousProxied = previousLabels?.[`${providerPrefix}proxied`] || previousLabels?.[`${genericPrefix}proxied`];
+      
+      // Only log at INFO level if this is the first poll or the proxied value has changed
+      if (firstPoll || previousProxied !== proxiedLabel) {
+        if (proxiedLabel === 'false') {
+          logger.info(`🔍 Found proxied=false for ${hostname} from container ${containerName}`);
+          // Track the change for summary
+          labelChanges[hostname] = 'unproxied';
+        } else if (proxiedLabel === 'true' && previousProxied === 'false') {
+          logger.info(`🔍 Found proxied=true for ${hostname} from container ${containerName}`);
+          // Track the change for summary
+          labelChanges[hostname] = 'proxied';
+        }
+      } else {
+        // Use debug level for repeated information
+        if (proxiedLabel === 'false') {
+          logger.debug(`Found proxied=false for ${hostname} from container ${containerName}`);
+        }
       }
     }
     
@@ -361,9 +354,7 @@ class TraefikMonitor {
     }
     
     // Store the current labels for next comparison
-    this.lastMergedLabels = JSON.parse(JSON.stringify(mergedLabels));
-    
-    return mergedLabels;
+    this.lastMergedLabels = JSON.parse(JSON.stringify(containerLabels));
   }
   
   /**

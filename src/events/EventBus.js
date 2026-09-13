@@ -4,6 +4,7 @@
  */
 const EventEmitter = require('events');
 const logger = require('../utils/logger');
+const { runGuarded } = require('../utils/errors');
 const EventTypes = require('./EventTypes');
 
 class EventBus {
@@ -32,7 +33,8 @@ class EventBus {
       logger.warn(`Subscribing to unknown event type: ${eventType}`);
     }
     
-    this.emitter.on(eventType, handler);
+    const wrapped = (data) => runGuarded(`Error in ${eventType} subscriber`, () => handler(data));
+    this.emitter.on(eventType, wrapped);
     
     // Track subscriber counts
     this.subscriberCounts[eventType] = (this.subscriberCounts[eventType] || 0) + 1;
@@ -40,7 +42,7 @@ class EventBus {
     
     // Return unsubscribe function for cleanup
     return () => {
-      this.emitter.off(eventType, handler);
+      this.emitter.off(eventType, wrapped);
       this.subscriberCounts[eventType]--;
       logger.debug(`Unsubscribed from event ${eventType} (${this.subscriberCounts[eventType]} subscribers)`);
     };
