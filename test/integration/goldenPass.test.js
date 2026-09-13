@@ -11,6 +11,7 @@ installExitWatchdog();
 const PRESEEDED = ['app.example.com', 'watcher.example.com', 'traefik.example.com'];
 const SEED_RECORDS = PRESEEDED.map((name) => ({ type: 'CNAME', name, content: 'example.com', proxied: true, ttl: 1 }));
 const AMBIGUITY_WARN = 'Router shared@docker is claimed by containers left, right with different DNS labels; leaving its hostnames unmanaged';
+const FALLBACK_INFO = 'Router legacy@docker attributed to container legacy (no traefik.enable label)';
 
 const names = (records) => records.map((record) => record.name).sort();
 
@@ -37,6 +38,9 @@ test('(i) the golden set runs end to end: exact managed set, no writes for corre
   assert.deepEqual(names(stub.created), golden.expectedManagedHostnames.filter((name) => !PRESEEDED.includes(name)));
   assert.deepEqual(stub.updated, []);
   assert.deepEqual(names(stub.unchanged), [...PRESEEDED].sort());
+  const legacyRecord = stub.created.find((record) => record.name === 'legacy.example.com');
+  assert.ok(legacyRecord, 'legacy.example.com is created');
+  assert.equal(legacyRecord.proxied, false);
 
   const batchesBefore = stub.batches.length;
   const createdBefore = stub.created.length;
@@ -52,6 +56,7 @@ test('(i) the golden set runs end to end: exact managed set, no writes for corre
   for (const excluded of golden.expectedExcludedHostnames) {
     assert.ok(!batchedHostnames(stub).includes(excluded), `${excluded} is in no batch`);
   }
+  assert.ok(!batchedHostnames(stub).includes('disabled.example.com'), 'disabled.example.com is in no batch');
 
   const warns = logs.entries.filter((entry) => entry.level === 'WARN').map((entry) => entry.text);
   assert.equal(warns.length, 1, warns.join('\n'));
@@ -59,4 +64,6 @@ test('(i) the golden set runs end to end: exact managed set, no writes for corre
   const managing = logs.entries.filter((entry) => entry.level === 'INFO' && /Managing \d+ hostnames/.test(entry.text));
   assert.equal(managing.length, 1, managing.map((entry) => entry.text).join('\n'));
   assert.ok(managing[0].text.endsWith(`Managing ${golden.expectedManagedHostnames.length} hostnames`));
+  const fallbackInfos = logs.entries.filter((entry) => entry.level === 'INFO' && entry.text.endsWith(FALLBACK_INFO));
+  assert.equal(fallbackInfos.length, 1, fallbackInfos.map((entry) => entry.text).join('\n'));
 });

@@ -182,6 +182,24 @@ const containers = [
       'traefik.http.routers.shared.rule': 'Host(`shared.example.com`)',
       'dns.manage': 'true'
     }
+  },
+  {
+    Id: '23'.repeat(32),
+    Names: ['/legacy'],
+    Labels: {
+      'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)',
+      'dns.manage': 'true',
+      'dns.proxied': 'false'
+    }
+  },
+  {
+    Id: '24'.repeat(32),
+    Names: ['/disabled'],
+    Labels: {
+      'traefik.enable': 'false',
+      'traefik.http.routers.disabled.rule': 'Host(`disabled.example.com`)',
+      'dns.manage': 'true'
+    }
   }
 ];
 
@@ -206,7 +224,9 @@ const routers = [
   { name: 'blog-admin@docker', provider: 'docker', entryPoints: ['blog'], service: 'blog', rule: 'Host(`blog-admin.example.com`)', status: 'enabled' },
   { name: 'plain-stack@docker', provider: 'docker', entryPoints: ['https'], service: 'plain-stack', rule: 'Host(`plain.example.com`)', status: 'enabled' },
   { name: 'cafe@docker', provider: 'docker', entryPoints: ['https'], service: 'cafe', rule: 'Host(`cafe.example.com`)', status: 'enabled' },
-  { name: 'shared@docker', provider: 'docker', entryPoints: ['https'], service: 'shared', rule: 'Host(`shared.example.com`)', status: 'enabled' }
+  { name: 'shared@docker', provider: 'docker', entryPoints: ['https'], service: 'shared', rule: 'Host(`shared.example.com`)', status: 'enabled' },
+  { name: 'legacy@docker', provider: 'docker', entryPoints: ['https'], service: 'legacy', rule: 'Host(`legacy.example.com`)', status: 'enabled' },
+  { name: 'disabled@docker', provider: 'docker', entryPoints: ['https'], service: 'disabled', rule: 'Host(`disabled.example.com`)', status: 'enabled' }
 ];
 
 const expectedOwners = {
@@ -230,7 +250,9 @@ const expectedOwners = {
   'blog-admin@docker': 'blog',
   'plain-stack@docker': 'plain',
   'cafe@docker': 'cafe',
-  'shared@docker': null
+  'shared@docker': null,
+  'legacy@docker': 'legacy',
+  'disabled@docker': null
 };
 
 const expectedManagedHostnames = [
@@ -242,6 +264,7 @@ const expectedManagedHostnames = [
   'dash.example.com',
   'desk.example.com',
   'foo.example.com',
+  'legacy.example.com',
   'media-anime.example.com',
   'media-tv.example.com',
   'plain.example.com',
@@ -253,11 +276,14 @@ const expectedExcludedHostnames = ['shared.example.com'];
 
 const expectedAmbiguousRouters = ['shared@docker'];
 
+const expectedFallbackRouters = ['legacy@docker'];
+
 module.exports = {
   containers,
   routers,
   expectedOwners,
   expectedManagedHostnames,
   expectedExcludedHostnames,
-  expectedAmbiguousRouters
+  expectedAmbiguousRouters,
+  expectedFallbackRouters
 };
