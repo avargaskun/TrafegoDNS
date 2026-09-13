@@ -131,9 +131,7 @@ class TraefikMonitor {
     }
   }
   
-  /**
-   * Request a poll; a request made while a poll is running is served by one trailing poll
-   */
+  // A request made during a running poll is served by one trailing poll.
   requestPoll(trigger) {
     return this.pollRunner.run(trigger);
   }
