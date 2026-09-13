@@ -8,25 +8,22 @@ const path = require('path');
 const logger = require('./logger');
 
 class RecordTracker {
-  constructor(config) {
+  constructor(config, dataDir = path.join('/config', 'data')) {
     this.config = config;
     this.trackedRecords = new Map();
     
-    // Define config directory path for data storage
-    const configDir = path.join('/config', 'data');
-    
     // Ensure the config directory exists
-    if (!fs.existsSync(configDir)) {
+    if (!fs.existsSync(dataDir)) {
       try {
-        fs.mkdirSync(configDir, { recursive: true });
-        logger.debug(`Created directory: ${configDir}`);
+        fs.mkdirSync(dataDir, { recursive: true });
+        logger.debug(`Created directory: ${dataDir}`);
       } catch (error) {
         logger.error(`Failed to create config directory: ${error.message}`);
       }
     }
     
     // Define the new path for the tracker file
-    this.trackerFile = path.join(configDir, 'dns-records.json');
+    this.trackerFile = path.join(dataDir, 'dns-records.json');
     
     // Also check for the legacy location
     this.legacyTrackerFile = path.join(process.cwd(), 'dns-records.json');

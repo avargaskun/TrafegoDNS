@@ -7,15 +7,16 @@ const logger = require('../utils/logger');
 const EventTypes = require('../events/EventTypes');
 const { extractDnsConfigFromLabels } = require('../utils/dns');
 const RecordTracker = require('../utils/recordTracker');
+const { SingleFlight } = require('../utils/singleFlight');
 
 class DNSManager {
-  constructor(config, eventBus) {
+  constructor(config, eventBus, options = {}) {
     this.config = config;
     this.eventBus = eventBus;
-    this.dnsProvider = DNSProviderFactory.createProvider(config);
+    this.dnsProvider = options.dnsProvider ?? DNSProviderFactory.createProvider(config);
     
     // Initialise record tracker
-    this.recordTracker = new RecordTracker(config);
+    this.recordTracker = new RecordTracker(config, options.dataDir);
     
     // Track which preserved records we've already logged to avoid spam
     this.loggedPreservedRecords = new Set();
@@ -33,6 +34,10 @@ class DNSManager {
     this.previousStats = {
       upToDateCount: 0
     };
+    
+    this.previousManagedHostnames = null;
+    
+    this.dnsPass = new SingleFlight((hostnames, containerLabels) => this.processHostnames(hostnames, containerLabels));
     
     // Subscribe to relevant events
     this.setupEventSubscriptions();
@@ -61,10 +66,7 @@ class DNSManager {
    */
   setupEventSubscriptions() {
     // Subscribe to Traefik router updates
-    this.eventBus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, async (data) => {
-      const { hostnames, containerLabels } = data;
-      await this.processHostnames(hostnames, containerLabels);
-    });
+    this.eventBus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => this.dnsPass.run(data.hostnames, data.containerLabels));
   }
   
   /**
@@ -185,6 +187,23 @@ class DNSManager {
       if (this.config.cleanupOrphaned && processedHostnames.length > 0) {
         await this.cleanupOrphanedRecords(processedHostnames);
       }
+      
+      const current = new Set(processedHostnames);
+      const prev = this.previousManagedHostnames;
+      if (prev === null) {
+        logger.info(`Managing ${current.size} hostnames`);
+      } else {
+        const changes = [
+          ...[...current].filter((h) => !prev.has(h)).sort().map((h) => `+${h}`),
+          ...[...prev].filter((h) => !current.has(h)).sort().map((h) => `-${h}`),
+        ];
+        if (changes.length > 0) {
+          const shown = changes.slice(0, 10).join(', ');
+          const more = changes.length > 10 ? `, … (+${changes.length - 10} more)` : '';
+          logger.info(`Managing ${current.size} hostnames (${shown}${more})`);
+        }
+      }
+      this.previousManagedHostnames = current;
       
       // Publish event with results
       this.eventBus.publish(EventTypes.DNS_RECORDS_UPDATED, {
