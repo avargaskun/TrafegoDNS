@@ -2,7 +2,11 @@
 
 echo
 echo "-------------------------------------"
-echo "TráfegoDNS has exited with status $?. Restarting..."
+if [ "${1:-}" = "256" ]; then
+  echo "TráfegoDNS was terminated by signal ${2:-unknown}. Restarting..."
+else
+  echo "TráfegoDNS has exited with status ${1:-unknown}. Restarting..."
+fi
 echo "-------------------------------------"
 echo
 exit 0

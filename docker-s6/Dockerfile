@@ -1,9 +1,8 @@
-# Stage 1: Generate package-lock.json
+# Stage 1: Install production dependencies from the lockfile
 FROM node:23-alpine AS dependencies
 WORKDIR /app
-COPY package.json .
-RUN npm install --package-lock-only
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 # Stage 2: Build the application
 FROM node:23-alpine AS build
