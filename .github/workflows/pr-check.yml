@@ -11,6 +11,7 @@ jobs:
   pr-check:
     name: pr-check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,8 +31,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: Test
-        run: |
-          if [ -d test ]; then npm test; else echo "No test/ directory yet; skipping npm test"; fi
+        run: npm test
       - uses: docker/setup-buildx-action@v3
       - name: Build image (amd64, no push)
         uses: docker/build-push-action@v7
