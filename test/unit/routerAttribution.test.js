@@ -65,6 +65,7 @@ function resolveOwner(ref, containers) {
 
 const goldenContainers = golden.containers.map(toContainer);
 const goldenCandidates = goldenContainers.filter((c) => isCandidate(c, cfg));
+const goldenPools = candidatePools(goldenContainers, cfg);
 
 test('extractDnsLabels returns provider-specific keys first, then generic keys outside the provider prefix', () => {
   const labels = {
@@ -83,9 +84,12 @@ test('extractDnsLabels returns provider-specific keys first, then generic keys o
 test('golden set: findRouterOwner attributes every router exactly', () => {
   assert.deepEqual(Object.keys(golden.expectedOwners).sort(), golden.routers.map((r) => r.name).sort());
   for (const router of golden.routers) {
-    const result = findRouterOwner(toRef(router), goldenCandidates, cfg);
+    const result = resolveRouterOwner(toRef(router), goldenPools, cfg);
     assert.equal(result.owner ? result.owner.name : null, golden.expectedOwners[router.name], `owner of ${router.name}`);
     assert.equal(result.ambiguous, golden.expectedAmbiguousRouters.includes(router.name), `ambiguity of ${router.name}`);
+    const attributed = golden.expectedOwners[router.name] !== null || golden.expectedAmbiguousRouters.includes(router.name);
+    const expectedVia = golden.expectedFallbackRouters.includes(router.name) ? 'fallback' : attributed ? 'strict' : null;
+    assert.equal(result.via, expectedVia, `via of ${router.name}`);
   }
   const shared = findRouterOwner(toRef(golden.routers.find((r) => r.name === 'shared@docker')), goldenCandidates, cfg);
   assert.deepEqual(shared.owners.map((o) => o.name), ['left', 'right']);
@@ -98,6 +102,7 @@ test('golden set: attribution uses the documented step for each owner', () => {
   assert.equal(reasonOf('https-foo@docker'), 'entrypoint-split');
   assert.equal(reasonOf('plain-stack@docker'), 'default-router');
   assert.equal(reasonOf('files@file'), 'not-docker');
+  assert.equal(resolveRouterOwner(toRef(golden.routers.find((r) => r.name === 'legacy@docker')), goldenPools, cfg).reason, 'router-labels');
 });
 
 test('golden set: resolveHostnameLabels excludes the ambiguous hostname once and yields the managed set', () => {
@@ -124,6 +129,14 @@ test('golden set: resolveHostnameLabels excludes the ambiguous hostname once and
   assert.equal(result.owners['files.example.com'], null);
   assert.equal(result.owners['static-a.example.com'], 'static');
   assert.equal(Object.hasOwn(result.containerLabels, 'shared.example.com'), false);
+  assert.deepEqual(result.containerLabels['legacy.example.com'], {
+    'traefik.http.routers.legacy@docker.service': 'legacy',
+    routerName: 'legacy@docker',
+    'dns.manage': 'true',
+    'dns.proxied': 'false'
+  });
+  assert.equal(result.owners['disabled.example.com'], null);
+  assert.deepEqual(result.fallbackRouters, [{ routerName: 'legacy@docker', ownerName: 'legacy' }]);
 });
 
 test('resolveHostnameLabels accepts an ordered object as well as a Map', () => {
