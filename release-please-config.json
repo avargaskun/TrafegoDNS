@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "318cfdf2f201fb075c8aa94b7542b4f53e03e43d",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "trafegodns",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}
