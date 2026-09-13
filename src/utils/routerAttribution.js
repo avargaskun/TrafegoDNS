@@ -114,24 +114,33 @@ function resolveRouterOwner(ref, pools, cfg) {
 
 function resolveHostnameLabels(hostnameRouters, containers, cfg) {
   const { traefikLabelPrefix: tp, genericLabelPrefix: gp, dnsLabelPrefix: pp } = cfg;
-  const candidates = containers.filter((c) => isCandidate(c, cfg));
+  const pools = candidatePools(containers, cfg);
   const entries = hostnameRouters instanceof Map ? [...hostnameRouters] : Object.entries(hostnameRouters);
 
   const routerResults = new Map();
   const ownerOf = (ref) => {
-    if (!routerResults.has(ref.name)) routerResults.set(ref.name, findRouterOwner(ref, candidates, cfg));
+    if (!routerResults.has(ref.name)) routerResults.set(ref.name, resolveRouterOwner(ref, pools, cfg));
     return routerResults.get(ref.name);
   };
+  const strictFirst = (a, b) => Number(!isCandidate(a, cfg)) - Number(!isCandidate(b, cfg)) || byName(a, b);
 
   const containerLabels = {};
   const excludedHostnames = new Set();
   const ambiguousRouters = [];
   const reportedRouters = new Set();
+  const fallbackRouters = [];
+  const seenFallbackRouters = new Set();
   const ownerConflicts = [];
   const owners = {};
 
   for (const [hostname, refs] of entries) {
     const results = refs.map(ownerOf);
+    for (const [i, ref] of refs.entries()) {
+      const { via, owner } = results[i];
+      if (via !== 'fallback' || !owner || seenFallbackRouters.has(ref.name)) continue;
+      seenFallbackRouters.add(ref.name);
+      if (Object.keys(dnsLabelsOf(owner, cfg)).length > 0) fallbackRouters.push({ routerName: ref.name, ownerName: owner.name });
+    }
     const ambiguousRefs = refs.filter((_ref, i) => results[i].ambiguous);
     if (ambiguousRefs.length > 0) {
       excludedHostnames.add(hostname);
@@ -143,7 +152,7 @@ function resolveHostnameLabels(hostnameRouters, containers, cfg) {
       continue;
     }
 
-    const hostOwners = [...new Set(results.map((r) => r.owner).filter(Boolean))].sort(byName);
+    const hostOwners = [...new Set(results.map((r) => r.owner).filter(Boolean))].sort(strictFirst);
     const skipOwner = hostOwners.find((o) => getLabelValue(labelsOf(o), gp, pp, 'skip', null) === 'true');
     const managers = hostOwners.filter((o) => getLabelValue(labelsOf(o), gp, pp, 'manage', null) === 'true');
     const chosen = skipOwner ?? managers[0] ?? hostOwners[0] ?? null;
@@ -160,7 +169,7 @@ function resolveHostnameLabels(hostnameRouters, containers, cfg) {
     owners[hostname] = chosen ? chosen.name : null;
   }
 
-  return { containerLabels, excludedHostnames, ambiguousRouters, ownerConflicts, owners };
+  return { containerLabels, excludedHostnames, ambiguousRouters, ownerConflicts, owners, fallbackRouters };
 }
 
 module.exports = {

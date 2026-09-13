@@ -159,7 +159,7 @@ test('scaled replicas with identical DNS labels are not ambiguous and the first 
   assert.equal(resolved.owners['web.example.com'], 'web-1');
 });
 
-test('a container with router labels but without traefik.enable=true never owns a router', () => {
+test('traefik.enable=false never owns a router, and a container without the label owns it only through the fallback', () => {
   const routerLabels = { 'traefik.http.routers.solo.rule': 'Host(`solo.example.com`)', 'dns.manage': 'true' };
   const noEnable = container('solo', { ...routerLabels });
   const disabled = container('solo', { ...routerLabels, 'traefik.enable': 'false' });
@@ -170,7 +170,7 @@ test('a container with router labels but without traefik.enable=true never owns 
   assert.equal(isCandidate(upperCase, cfg), true);
 
   const hostnameRouters = new Map([['solo.example.com', [dockerRef('solo@docker')]]]);
-  for (const c of [noEnable, disabled]) {
+  for (const c of [disabled]) {
     const result = resolveHostnameLabels(hostnameRouters, [c], cfg);
     assert.equal(result.owners['solo.example.com'], null);
     assert.deepEqual(result.containerLabels['solo.example.com'], {
@@ -178,6 +178,14 @@ test('a container with router labels but without traefik.enable=true never owns 
       routerName: 'solo@docker'
     });
   }
+
+  const fallback = resolveHostnameLabels(hostnameRouters, [noEnable], cfg);
+  assert.equal(fallback.owners['solo.example.com'], 'solo');
+  assert.deepEqual(fallback.containerLabels['solo.example.com'], {
+    'traefik.http.routers.solo@docker.service': 'solo',
+    routerName: 'solo@docker',
+    'dns.manage': 'true'
+  });
 });
 
 test('@file and @internal routers have no owner, even when a container carries matching labels', () => {
@@ -377,4 +385,124 @@ test('strict ambiguity is never resolved by the fallback', () => {
   assert.equal(result.owner, null);
   assert.equal(result.via, 'strict');
   assert.deepEqual(result.owners.map((o) => o.name), ['left', 'right']);
+});
+
+test('a container without traefik.enable owns an unclaimed router through the fallback', () => {
+  const legacy = container('legacy', { 'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)', 'dns.manage': 'true' });
+  const owner = resolveOwner(dockerRef('legacy@docker'), [legacy]);
+  assert.equal(owner.owner.name, 'legacy');
+  assert.equal(owner.via, 'fallback');
+  assert.equal(owner.reason, 'router-labels');
+
+  const result = resolveHostnameLabels(new Map([['legacy.example.com', [dockerRef('legacy@docker')]]]), [legacy], cfg);
+  assert.equal(result.owners['legacy.example.com'], 'legacy');
+  assert.equal(result.containerLabels['legacy.example.com']['dns.manage'], 'true');
+  assert.deepEqual(result.fallbackRouters, [{ routerName: 'legacy@docker', ownerName: 'legacy' }]);
+  assert.equal(result.excludedHostnames.size, 0);
+});
+
+test('an enabled claimant beats a container without traefik.enable, and the fallback is never consulted', () => {
+  const app = container('app', { 'traefik.enable': 'true', 'traefik.http.routers.shared2.rule': 'Host(`shared2.example.com`)', 'dns.manage': 'true' });
+  const legacy = container('legacy', { 'traefik.http.routers.shared2.rule': 'Host(`shared2.example.com`)', 'dns.proxied': 'false' });
+  const owner = resolveOwner(dockerRef('shared2@docker'), [app, legacy]);
+  assert.equal(owner.owner.name, 'app');
+  assert.equal(owner.via, 'strict');
+  assert.equal(owner.ambiguous, false);
+  assert.deepEqual(owner.owners.map((o) => o.name), ['app']);
+
+  const result = resolveHostnameLabels(new Map([['shared2.example.com', [dockerRef('shared2@docker')]]]), [app, legacy], cfg);
+  assert.equal(result.owners['shared2.example.com'], 'app');
+  assert.equal(result.excludedHostnames.size, 0);
+  assert.deepEqual(result.ambiguousRouters, []);
+  assert.deepEqual(result.fallbackRouters, []);
+});
+
+test('traefik.enable=false never owns a router, even when nothing else claims it', () => {
+  const disabled = container('disabled', {
+    'traefik.enable': 'false',
+    'traefik.http.routers.disabled.rule': 'Host(`disabled.example.com`)',
+    'dns.manage': 'true'
+  });
+  const owner = resolveOwner(dockerRef('disabled@docker'), [disabled]);
+  assert.equal(owner.owner, null);
+  assert.equal(owner.via, null);
+  assert.equal(owner.ambiguous, false);
+
+  const result = resolveHostnameLabels(new Map([['disabled.example.com', [dockerRef('disabled@docker')]]]), [disabled], cfg);
+  assert.equal(result.owners['disabled.example.com'], null);
+  assert.deepEqual(result.containerLabels['disabled.example.com'], {
+    'traefik.http.routers.disabled@docker.service': 'disabled',
+    routerName: 'disabled@docker'
+  });
+  assert.deepEqual(result.fallbackRouters, []);
+});
+
+test('fallback ambiguity follows the same DNS-label rule as the strict pass', () => {
+  const ref = dockerRef('legacy@docker');
+  const hostnameRouters = new Map([['legacy.example.com', [ref]], ['www.legacy.example.com', [ref]]]);
+  const rule = 'Host(`legacy.example.com`) || Host(`www.legacy.example.com`)';
+
+  const legacyA = container('legacy-a', { 'traefik.http.routers.legacy.rule': rule, 'dns.manage': 'true' });
+  const legacyB = container('legacy-b', { 'traefik.http.routers.legacy.rule': rule, 'dns.proxied': 'false' });
+  const ambiguous = resolveOwner(ref, [legacyB, legacyA]);
+  assert.equal(ambiguous.ambiguous, true);
+  assert.equal(ambiguous.via, 'fallback');
+  assert.equal(ambiguous.owner, null);
+
+  const excluded = resolveHostnameLabels(hostnameRouters, [legacyB, legacyA], cfg);
+  assert.deepEqual([...excluded.excludedHostnames], ['legacy.example.com', 'www.legacy.example.com']);
+  assert.deepEqual(excluded.ambiguousRouters, [{ routerName: 'legacy@docker', ownerNames: ['legacy-a', 'legacy-b'] }]);
+  assert.deepEqual(excluded.fallbackRouters, []);
+  assert.deepEqual(excluded.containerLabels, {});
+
+  const replicaA = container('legacy-a', { 'traefik.http.routers.legacy.rule': rule, 'dns.manage': 'true' });
+  const replicaB = container('legacy-b', { 'traefik.http.routers.legacy.rule': rule, 'dns.manage': 'true' });
+  const replicas = resolveOwner(ref, [replicaB, replicaA]);
+  assert.equal(replicas.owner.name, 'legacy-a');
+  assert.equal(replicas.via, 'fallback');
+  assert.equal(replicas.ambiguous, false);
+
+  const resolved = resolveHostnameLabels(hostnameRouters, [replicaB, replicaA], cfg);
+  assert.equal(resolved.excludedHostnames.size, 0);
+  assert.equal(resolved.owners['legacy.example.com'], 'legacy-a');
+});
+
+test('strict owners rank before fallback owners on a shared hostname', () => {
+  const hostnameRouters = new Map([['web.example.com', [dockerRef('web@docker'), dockerRef('api@docker')]]]);
+  const web = container('web', { 'traefik.enable': 'true', 'traefik.http.routers.web.rule': 'Host(`web.example.com`)', 'dns.proxied': 'false' });
+  const apiLabels = { 'traefik.http.routers.api.rule': 'Host(`web.example.com`) && PathPrefix(`/api`)' };
+
+  const result = resolveHostnameLabels(hostnameRouters, [web, container('api', apiLabels)], cfg);
+  assert.equal(result.owners['web.example.com'], 'web');
+  assert.equal(result.containerLabels['web.example.com']['dns.proxied'], 'false');
+  assert.deepEqual(result.ownerConflicts, []);
+
+  const managed = resolveHostnameLabels(hostnameRouters, [web, container('api', { ...apiLabels, 'dns.manage': 'true' })], cfg);
+  assert.equal(managed.owners['web.example.com'], 'api');
+  assert.equal(managed.containerLabels['web.example.com']['dns.manage'], 'true');
+  assert.deepEqual(managed.ownerConflicts, []);
+});
+
+test('fallbackRouters omits fallback owners that carry no DNS labels', () => {
+  const solo = container('solo', {});
+  const ref = dockerRef('solo@docker');
+  const owner = resolveOwner(ref, [solo]);
+  assert.equal(owner.owner.name, 'solo');
+  assert.equal(owner.via, 'fallback');
+
+  const result = resolveHostnameLabels(new Map([['solo.example.com', [ref]]]), [solo], cfg);
+  assert.equal(result.owners['solo.example.com'], 'solo');
+  assert.deepEqual(result.fallbackRouters, []);
+});
+
+test('fallbackRouters lists a fallback router even when another router\'s ambiguity excludes its hostname', () => {
+  const left = container('left', { 'traefik.enable': 'true', 'traefik.http.routers.shared.rule': 'Host(`shop.example.com`)', 'dns.manage': 'true' });
+  const right = container('right', { 'traefik.enable': 'true', 'traefik.http.routers.shared.rule': 'Host(`shop.example.com`)', 'dns.skip': 'true' });
+  const legacy = container('legacy', { 'traefik.http.routers.legacy.rule': 'Host(`shop.example.com`)', 'dns.manage': 'true' });
+  const hostnameRouters = new Map([['shop.example.com', [dockerRef('shared@docker'), dockerRef('legacy@docker')]]]);
+
+  const result = resolveHostnameLabels(hostnameRouters, [left, right, legacy], cfg);
+  assert.equal(result.excludedHostnames.has('shop.example.com'), true);
+  assert.deepEqual(result.ambiguousRouters, [{ routerName: 'shared@docker', ownerNames: ['left', 'right'] }]);
+  assert.deepEqual(result.fallbackRouters, [{ routerName: 'legacy@docker', ownerName: 'legacy' }]);
 });
