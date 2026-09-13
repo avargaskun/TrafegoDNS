@@ -19,8 +19,7 @@ jobs:
         with:
           node-version: '23.11.1'
       - run: npm ci
-      - name: npm audit (report-only until PR 2b)
-        continue-on-error: true
+      - name: npm audit
         run: |
           echo '### npm audit --omit=dev --audit-level=high' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
