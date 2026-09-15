@@ -1,22 +1,7 @@
-// @ts-nocheck
 import logger from '../../src/utils/logger';
 import { LOG_LEVELS } from '../../src/utils/logger';
-
-/**
- * @typedef {'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE'} LogLevelName
- */
-
-/**
- * @typedef {Object} LogEntry
- * @property {LogLevelName | null} level - Parsed level, or null for raw console output.
- * @property {string} text - The full line as printed.
- */
-
-/**
- * @typedef {Object} CapturedLogs
- * @property {string[]} lines - Raw printed lines (live array).
- * @property {LogEntry[]} entries - Printed lines with their parsed level (live array).
- */
+import type { TestContext } from 'node:test';
+import type { CapturedLogs, LogEntry, LogLevelName } from '../../types/test';
 
 const TAGGED_LINE = /^\S+ \[(ERROR|WARN|INFO|DEBUG|TRACE)\] /;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z /;
@@ -25,9 +10,9 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z /;
  * @param {string} text
  * @returns {LogLevelName | null}
  */
-function parseLevel(text) {
+function parseLevel(text: string): LogLevelName | null {
   const tagged = TAGGED_LINE.exec(text);
-  if (tagged) return /** @type {LogLevelName} */ (tagged[1]);
+  if (tagged) return (tagged[1] as LogLevelName);
   // INFO lines are printed with a symbol instead of an [INFO] tag.
   if (ISO_TIMESTAMP.test(text)) return 'INFO';
   return null;
@@ -39,14 +24,12 @@ function parseLevel(text) {
  * @param {LogLevelName} [level='DEBUG'] - Logger level to use while capturing.
  * @returns {CapturedLogs}
  */
-function captureLogs(t, level = 'DEBUG') {
-  /** @type {string[]} */
-  const lines = [];
-  /** @type {LogEntry[]} */
-  const entries = [];
+function captureLogs(t: TestContext, level: LogLevelName = 'DEBUG'): CapturedLogs {
+  const lines: string[] = [];
+  const entries: LogEntry[] = [];
   const savedLevel = logger.level;
   logger.level = LOG_LEVELS[level];
-  t.mock.method(console, 'log', (...args) => {
+  t.mock.method(console, 'log', (...args: unknown[]) => {
     const text = args.join(' ');
     lines.push(text);
     entries.push({ level: parseLevel(text), text });

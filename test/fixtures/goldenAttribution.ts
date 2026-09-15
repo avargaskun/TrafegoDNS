@@ -1,5 +1,6 @@
-// @ts-nocheck
-const containers = [
+import type { FakeContainer, FakeTraefikRouter } from '../../types/test';
+
+const containers: FakeContainer[] = [
   {
     Id: '01'.repeat(32),
     Names: ['/app-worker'],
@@ -204,7 +205,7 @@ const containers = [
   }
 ];
 
-const routers = [
+const routers: FakeTraefikRouter[] = [
   { name: 'app@docker', provider: 'docker', entryPoints: ['https'], service: 'app', rule: 'Host(`app.example.com`)', status: 'enabled' },
   { name: 'app-speed@docker', provider: 'docker', entryPoints: ['https'], service: 'app', rule: 'Host(`app-speed.example.com`)', status: 'enabled' },
   { name: 'watcher@docker', provider: 'docker', entryPoints: ['https'], service: 'watcher', rule: 'Host(`watcher.example.com`)', status: 'enabled' },
@@ -230,7 +231,7 @@ const routers = [
   { name: 'disabled@docker', provider: 'docker', entryPoints: ['https'], service: 'disabled', rule: 'Host(`disabled.example.com`)', status: 'enabled' }
 ];
 
-const expectedOwners = {
+const expectedOwners: Record<string, string | null> = {
   'app@docker': 'app',
   'app-speed@docker': 'app',
   'watcher@docker': 'watcher',

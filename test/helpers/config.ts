@@ -1,36 +1,12 @@
-// @ts-nocheck
-/**
- * @typedef {Object} TestConfig
- * @property {string} genericLabelPrefix
- * @property {string} dnsLabelPrefix
- * @property {string} traefikLabelPrefix
- * @property {string} dnsProvider
- * @property {boolean} defaultManage
- * @property {boolean} cleanupOrphaned
- * @property {number} cleanupGracePeriod
- * @property {boolean} watchDockerEvents
- * @property {number} pollInterval
- * @property {number} apiTimeout
- * @property {number} cacheRefreshInterval
- * @property {string} defaultRecordType
- * @property {string} managedHostnames
- * @property {string} dockerSocket
- * @property {string} operationMode
- * @property {string} traefikApiUrl
- * @property {string} cloudflareToken
- * @property {string} cloudflareZone
- * @property {() => string} getProviderDomain
- * @property {(type: string) => { content: string, proxied: boolean, ttl: number }} getDefaultsForType
- * @property {() => string} getPublicIPSync
- * @property {() => Promise<string>} getPublicIP
- */
+import type ConfigManager from '../../src/config/ConfigManager';
+import type { TestConfig } from '../../types/test';
 
 /**
  * Plain config object for tests; stands in for ConfigManager, which must never be constructed in tests.
  * @param {Partial<TestConfig> & Record<string, unknown>} [overrides={}] - Values that replace the defaults.
  * @returns {TestConfig & Record<string, unknown>}
  */
-function makeConfig(overrides = {}) {
+function makeConfig(overrides: Partial<TestConfig> & Record<string, unknown> = {}): ConfigManager {
   return {
     genericLabelPrefix: 'dns.',
     dnsLabelPrefix: 'dns.cloudflare.',
@@ -55,7 +31,7 @@ function makeConfig(overrides = {}) {
     cloudflareToken: 'SYNTHETIC-TOKEN-123',
     cloudflareZone: 'example.com',
     ...overrides
-  };
+  } as unknown as ConfigManager;
 }
 
 export { makeConfig };

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Polls `predicate` every 10 ms until it returns a truthy value.
  * @template T
@@ -7,7 +6,7 @@
  * @param {string} [description='condition'] - Used in the timeout error message.
  * @returns {Promise<T>} The first truthy value returned by `predicate`.
  */
-async function waitFor(predicate, timeoutMs = 2000, description = 'condition') {
+async function waitFor<T>(predicate: () => T | Promise<T>, timeoutMs: number = 2000, description: string = 'condition'): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await predicate();

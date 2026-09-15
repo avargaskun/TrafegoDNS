@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { after } from 'node:test';
 
 /**
@@ -8,7 +7,7 @@ import { after } from 'node:test';
  * @param {number} [graceMs=10000] - How long the process may stay alive after the file's last test.
  * @returns {void}
  */
-function installExitWatchdog(graceMs = 10000) {
+function installExitWatchdog(graceMs: number = 10000): void {
   after(() => {
     setTimeout(() => {
       const resources = process.getActiveResourcesInfo().join(', ');

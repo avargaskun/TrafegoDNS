@@ -1,55 +1,18 @@
-// @ts-nocheck
-/**
- * @typedef {Object} StubDnsRecord
- * @property {string} id
- * @property {string} type
- * @property {string} name
- * @property {string} [content]
- * @property {number} [ttl]
- * @property {boolean} [proxied]
- */
+import type { StubDnsProvider, StubDnsProviderOptions, StubDnsRecord } from '../../types/test';
 
-/**
- * @typedef {Object} StubDnsRecordConfig
- * @property {string} type
- * @property {string} name
- * @property {string} [content]
- * @property {number} [ttl]
- * @property {boolean} [proxied]
- */
-
-/**
- * @typedef {Object} StubDnsProviderOptions
- * @property {Array<Partial<StubDnsRecord> & { type: string, name: string }>} [records=[]] - Records the provider already holds; each gets a `stub-N` id unless it has one.
- */
-
-/**
- * @typedef {Object} StubDnsProvider
- * @property {() => Promise<void>} init
- * @property {(configs: StubDnsRecordConfig[]) => Promise<StubDnsRecord[]>} batchEnsureRecords - Creates, updates or leaves each record, matched by `type` and case-insensitive `name`.
- * @property {(forceRefresh?: boolean) => Promise<StubDnsRecord[]>} getRecordsFromCache
- * @property {(id: string) => Promise<boolean>} deleteRecord - Plain method so tests can spy on it with `t.mock.method`.
- * @property {StubDnsRecord[]} records - Live list of the records the provider holds.
- * @property {StubDnsRecordConfig[][]} batches - Every `batchEnsureRecords` argument, in call order.
- * @property {StubDnsRecord[]} created - Snapshots of records created by `batchEnsureRecords`.
- * @property {StubDnsRecord[]} updated - Snapshots of records updated by `batchEnsureRecords`.
- * @property {StubDnsRecord[]} unchanged - Snapshots of records `batchEnsureRecords` found already correct.
- * @property {string[]} calls - Names of the provider methods called, in order.
- */
-
-const COMPARED_KEYS = ['content', 'ttl', 'proxied'];
+const COMPARED_KEYS = ['content', 'ttl', 'proxied'] as const;
 
 /**
  * In-memory DNS provider for DNSManager tests.
  * @param {StubDnsProviderOptions} [options={}]
  * @returns {StubDnsProvider}
  */
-function createStubDnsProvider({ records = [] } = {}) {
+function createStubDnsProvider({ records = [] }: StubDnsProviderOptions = {}): StubDnsProvider {
   let nextId = 1;
   const newId = () => `stub-${nextId++}`;
-  const snapshot = (record) => ({ ...record });
+  const snapshot = (record: StubDnsRecord) => ({ ...record });
 
-  const provider = {
+  const provider: StubDnsProvider = {
     records: records.map((record) => ({ ...record, id: record.id ?? newId() })),
     batches: [],
     created: [],
@@ -69,9 +32,9 @@ function createStubDnsProvider({ records = [] } = {}) {
         const name = config.name.toLowerCase();
         const existing = provider.records.find((record) => record.type === config.type && record.name.toLowerCase() === name);
         if (!existing) {
-          const record = { id: newId(), type: config.type, name: config.name };
+          const record: StubDnsRecord = { id: newId(), type: config.type, name: config.name };
           for (const key of COMPARED_KEYS) {
-            if (config[key] !== undefined) record[key] = config[key];
+            if (config[key] !== undefined) (record as Record<typeof key, unknown>)[key] = config[key];
           }
           provider.records.push(record);
           provider.created.push(snapshot(record));
@@ -80,7 +43,7 @@ function createStubDnsProvider({ records = [] } = {}) {
         }
         const changedKeys = COMPARED_KEYS.filter((key) => config[key] !== undefined && config[key] !== existing[key]);
         if (changedKeys.length > 0) {
-          for (const key of changedKeys) existing[key] = config[key];
+          for (const key of changedKeys) (existing as Record<typeof key, unknown>)[key] = config[key];
           provider.updated.push(snapshot(existing));
         } else {
           provider.unchanged.push(snapshot(existing));
