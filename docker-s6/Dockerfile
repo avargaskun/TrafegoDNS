@@ -4,12 +4,14 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Stage 2: Build the application
+# Stage 2: Compile TypeScript
 FROM node:23-alpine AS build
 WORKDIR /app
-COPY --from=dependencies /app/package*.json ./
-COPY --from=dependencies /app/node_modules ./node_modules
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
 COPY src ./src
+RUN npm run build
 
 # Stage 3: Create the production image with s6-overlay
 FROM node:23-alpine
@@ -44,9 +46,9 @@ RUN addgroup -g 1001 abc && \
     chown -R abc:abc /config
 
 # Copy application files from build stage
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/src ./src
+COPY --from=dependencies /app/package*.json ./
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY --from=build /app/dist/src ./src
 RUN chown -R abc:abc /app
 
 # Create necessary directories for s6-overlay scripts
