@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Docker from 'dockerode';
@@ -12,6 +11,10 @@ import { waitFor } from '../helpers/waitFor';
 import { startFakeDockerDaemon } from '../helpers/fakeDockerDaemon';
 import { startFakeTraefik } from '../helpers/fakeTraefik';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { TestContext } from 'node:test';
+import type { DockerMonitorTimings } from '../../types/docker';
+import type { EventPayloads } from '../../types/events';
+import type { FakeContainer, FakeDockerDaemon, LogEntry, ProcessFault } from '../../types/test';
 
 installExitWatchdog();
 
@@ -39,14 +42,14 @@ const NEWAPP = {
 
 const RECONNECTED = /Docker event stream reconnected after (\d+) attempt\(s\); re-listed (\d+) running containers \(trigger=reconnect\)$/;
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function recordProcessFaults(t) {
-  const faults = [];
-  const onRejection = (reason) => faults.push(['unhandledRejection', reason]);
-  const onException = (error) => faults.push(['uncaughtException', error]);
+function recordProcessFaults(t: TestContext) {
+  const faults: ProcessFault[] = [];
+  const onRejection = (reason: unknown) => faults.push(['unhandledRejection', reason]);
+  const onException = (error: Error) => faults.push(['uncaughtException', error]);
   process.on('unhandledRejection', onRejection);
   process.on('uncaughtException', onException);
   t.after(() => {
@@ -56,11 +59,11 @@ function recordProcessFaults(t) {
   return faults;
 }
 
-function faultSummary(faults) {
+function faultSummary(faults: ProcessFault[]) {
   return faults.map(([kind, error]) => `${kind}: ${error?.message ?? String(error)}`).join('; ');
 }
 
-async function setup(t, { containers = [PROXY], timings = {} } = {}) {
+async function setup(t: TestContext, { containers = [PROXY], timings = {} }: { containers?: FakeContainer[]; timings?: Partial<DockerMonitorTimings> } = {}) {
   const daemon = await startFakeDockerDaemon();
   daemon.setContainers(containers);
   daemon.noise(true);
@@ -78,26 +81,26 @@ async function setup(t, { containers = [PROXY], timings = {} } = {}) {
   return { daemon, logs, faults, monitor };
 }
 
-async function startConnected(daemon, monitor) {
+async function startConnected(daemon: FakeDockerDaemon, monitor: DockerMonitor) {
   await monitor.startWatching();
   await waitFor(() => daemon.openEventStreams() === 1, 2000, 'the event stream to open');
   assert.equal(monitor.hasLoadedLabels(), true);
 }
 
-function warnings(entries) {
+function warnings(entries: LogEntry[]) {
   return entries.filter((entry) => entry.level === 'WARN');
 }
 
-function reconnectAttempts(entries) {
+function reconnectAttempts(entries: LogEntry[]) {
   return entries.filter((entry) => entry.level === 'DEBUG' && entry.text.includes('Docker event stream reconnect attempt'));
 }
 
-function reconnectedLine(entries) {
+function reconnectedLine(entries: LogEntry[]) {
   return entries.find((entry) => entry.level === 'INFO' && RECONNECTED.test(entry.text));
 }
 
 test('(c) a terminated event stream reconnects once, re-lists once and keeps handling events', async (t) => {
-  const modes = [
+  const modes: Array<{ mode: 'sever' | 'endCleanly' | 'endMidObject'; warn: RegExp }> = [
     { mode: 'sever', warn: /Docker event stream error: .+; reconnecting$/ },
     { mode: 'endCleanly', warn: /Docker event stream ended; reconnecting$/ },
     { mode: 'endMidObject', warn: /Docker event stream error: .+; reconnecting$/ }
@@ -117,7 +120,7 @@ test('(c) a terminated event stream reconnects once, re-lists once and keeps han
       const warns = warnings(logs.entries);
       assert.equal(warns.length, 1, warns.map((entry) => entry.text).join('\n'));
       assert.match(warns[0].text, warn);
-      assert.match(reconnectedLine(logs.entries).text, /after 1 attempt\(s\); re-listed 1 running containers/);
+      assert.match(reconnectedLine(logs.entries)!.text, /after 1 attempt\(s\); re-listed 1 running containers/);
       assert.equal(daemon.stats.listRequests, listBefore + 1);
       assert.equal(daemon.stats.eventsConnections, eventsBefore + 1);
       assert.equal(daemon.openEventStreams(), 1);
@@ -152,13 +155,13 @@ test('(d) an unreachable daemon is retried with backoff, WARNed once, and recove
   assert.match(warns[0].text, /Docker event stream error: .+; reconnecting$/);
   const attempts = reconnectAttempts(logs.entries);
   assert.match(attempts[1].text, /ECONNREFUSED/);
-  const delays = attempts.map((entry) => Number(/ in (\d+) ms /.exec(entry.text)[1]));
+  const delays = attempts.map((entry) => Number(/ in (\d+) ms /.exec(entry.text)![1]));
   assert.deepEqual(delays.slice(0, 3), [15, 30, 60]);
 
   await daemon.restart();
   const recovered = await waitFor(() => reconnectedLine(logs.entries), 3000, 'the reconnect INFO line');
 
-  const [, attemptCount, relisted] = RECONNECTED.exec(recovered.text);
+  const [, attemptCount, relisted] = RECONNECTED.exec(recovered.text)!;
   assert.equal(Number(relisted), 2);
   assert.equal(Number(attemptCount), reconnectAttempts(logs.entries).length);
   assert.ok(Number(attemptCount) >= 3);
@@ -274,7 +277,7 @@ test('(f) booting while Docker is down gates DNS passes until labels load, then 
   const dockerMonitor = new DockerMonitor(config, bus, { docker, timings: TIMINGS, random: () => 0.5 });
   const traefikMonitor = new TraefikMonitor(config, bus);
   traefikMonitor.dockerMonitor = dockerMonitor;
-  const routerUpdates = [];
+  const routerUpdates: Array<EventPayloads['traefik:routers:updated']> = [];
   bus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => routerUpdates.push(data));
   t.after(async () => {
     traefikMonitor.stopPolling();

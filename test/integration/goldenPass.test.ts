@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as golden from '../fixtures/goldenAttribution';
@@ -6,6 +5,7 @@ import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { startTraefikPipeline, batchedHostnames } from '../helpers/pipeline';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { StubDnsRecordConfig } from '../../types/test';
 
 installExitWatchdog();
 
@@ -14,7 +14,7 @@ const SEED_RECORDS = PRESEEDED.map((name) => ({ type: 'CNAME', name, content: 'e
 const AMBIGUITY_WARN = 'Router shared@docker is claimed by containers left, right with different DNS labels; leaving its hostnames unmanaged';
 const FALLBACK_INFO = 'Router legacy@docker attributed to container legacy (no traefik.enable label)';
 
-const names = (records) => records.map((record) => record.name).sort();
+const names = (records: StubDnsRecordConfig[]) => records.map((record) => record.name).sort();
 
 test('(i) the golden set runs end to end: exact managed set, no writes for correct records, idempotent re-poll', async (t) => {
   const logs = captureLogs(t, 'INFO');

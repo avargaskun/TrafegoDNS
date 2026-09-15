@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,6 +15,10 @@ import { startFakeDockerDaemon } from '../helpers/fakeDockerDaemon';
 import { createStubDnsProvider } from '../helpers/stubDnsProvider';
 import { FAST_TIMINGS, startTraefikPipeline, batchedHostnames } from '../helpers/pipeline';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { TestContext } from 'node:test';
+import type DNSProvider from '../../src/providers/base';
+import type { EventPayloads } from '../../types/events';
+import type { CapturedLogs, FakeContainer, LogLevelName, ProcessFault } from '../../types/test';
 
 installExitWatchdog();
 
@@ -51,14 +54,14 @@ const LATE_ROUTER = { name: 'late@docker', provider: 'docker', entryPoints: ['ht
 
 const REFRESH_FAILURE = 'Could not refresh Docker labels';
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function recordProcessFaults(t) {
-  const faults = [];
-  const onRejection = (reason) => faults.push(['unhandledRejection', reason]);
-  const onException = (error) => faults.push(['uncaughtException', error]);
+function recordProcessFaults(t: TestContext) {
+  const faults: ProcessFault[] = [];
+  const onRejection = (reason: unknown) => faults.push(['unhandledRejection', reason]);
+  const onException = (error: Error) => faults.push(['uncaughtException', error]);
   process.on('unhandledRejection', onRejection);
   process.on('uncaughtException', onException);
   t.after(() => {
@@ -68,18 +71,18 @@ function recordProcessFaults(t) {
   return faults;
 }
 
-function faultSummary(faults) {
+function faultSummary(faults: ProcessFault[]) {
   return faults.map(([kind, error]) => `${kind}: ${error?.message ?? String(error)}`).join('; ');
 }
 
-function entriesAt(logs, level, text) {
+function entriesAt(logs: CapturedLogs, level: LogLevelName, text: string) {
   return logs.entries.filter((entry) => entry.level === level && entry.text.includes(text));
 }
 
-const manages = (hostname) => (update) =>
+const manages = (hostname: string) => (update: EventPayloads['traefik:routers:updated']) =>
   update.hostnames.includes(hostname) && update.containerLabels[hostname]?.['dns.manage'] === 'true';
 
-async function startDirectPipeline(t, { containers = [] } = {}) {
+async function startDirectPipeline(t: TestContext, { containers = [] }: { containers?: FakeContainer[] } = {}) {
   const daemon = await startFakeDockerDaemon();
   daemon.setContainers(containers);
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trafegodns-'));
@@ -89,10 +92,10 @@ async function startDirectPipeline(t, { containers = [] } = {}) {
   const direct = new DirectDNSManager(config, bus);
   direct.dockerMonitor = dockerMonitor;
   const stub = createStubDnsProvider();
-  const dnsManager = new DNSManager(config, bus, { dnsProvider: stub, dataDir });
+  const dnsManager = new DNSManager(config, bus, { dnsProvider: stub as unknown as DNSProvider, dataDir });
 
-  const routerUpdates = [];
-  const dnsUpdates = [];
+  const routerUpdates: Array<EventPayloads['traefik:routers:updated']> = [];
+  const dnsUpdates: Array<EventPayloads['dns:records:updated']> = [];
   bus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => routerUpdates.push(data));
   bus.subscribe(EventTypes.DNS_RECORDS_UPDATED, (data) => dnsUpdates.push(data));
 
@@ -121,12 +124,12 @@ test('(g) a failing, then hanging, container list keeps the last good cache and 
   await waitFor(() => daemon.openEventStreams() === 1, 2000, 'the event stream to open');
   assert.deepEqual(dnsUpdates[0].processedHostnames, ['proxy.example.com']);
   // The short refresh timeout also bounds the boot listings, which may time out under CPU load before one succeeds.
-  const lastBootRefresh = logs.entries.filter((entry) => entry.text.includes('Docker labels refreshed') || entry.text.includes(REFRESH_FAILURE)).at(-1);
+  const lastBootRefresh = logs.entries.filter((entry) => entry.text.includes('Docker labels refreshed') || entry.text.includes(REFRESH_FAILURE)).at(-1)!;
   assert.match(lastBootRefresh.text, /Docker labels refreshed/, 'boot ends on a good refresh');
   const refreshWarnsAtBoot = entriesAt(logs, 'WARN', REFRESH_FAILURE).length;
   const warnsAtBoot = logs.entries.filter((entry) => entry.level === 'WARN').length;
   const goodContainers = structuredClone(dockerMonitor.getContainers());
-  const goodProxyLabels = structuredClone(routerUpdates.at(-1).containerLabels['proxy.example.com']);
+  const goodProxyLabels = structuredClone(routerUpdates.at(-1)!.containerLabels['proxy.example.com']);
   assert.equal(goodProxyLabels['dns.manage'], 'true');
 
   daemon.setContainers([PROXY, OTHER]);
@@ -153,14 +156,14 @@ test('(g) a failing, then hanging, container list keeps the last good cache and 
   assert.equal(logs.entries.filter((entry) => entry.level === 'WARN').length, warnsAtBoot + 1);
 
   assert.equal(routerUpdates.length, updatesBefore + 1);
-  const update = routerUpdates.at(-1);
+  const update = routerUpdates.at(-1)!;
   assert.deepEqual(update.hostnames, ['proxy.example.com']);
   assert.deepEqual(update.containerLabels['proxy.example.com'], goodProxyLabels);
 
   await waitFor(() => stub.batches.length > batchesBefore, 2000, 'the stub to receive the pass');
   await waitFor(() => dnsUpdates.length > passesBefore, 2000, 'the DNS pass to finish');
-  assert.deepEqual(stub.batches.at(-1).map((record) => record.name), ['proxy.example.com']);
-  assert.deepEqual(dnsUpdates.at(-1).processedHostnames, ['proxy.example.com']);
+  assert.deepEqual(stub.batches.at(-1)!.map((record) => record.name), ['proxy.example.com']);
+  assert.deepEqual(dnsUpdates.at(-1)!.processedHostnames, ['proxy.example.com']);
   assert.ok(!batchedHostnames(stub).includes('other.example.com'));
   assert.equal(faults.length, 0, faultSummary(faults));
 });
@@ -190,11 +193,11 @@ test('(h) with the event stream down, a poll re-lists containers and picks up a 
   assert.equal(daemon.stats.listRequests, listBefore + 1);
   assert.ok(dockerMonitor.getContainers().some((c) => c.name === 'late'));
   assert.equal(routerUpdates.length, updatesBefore + 1);
-  assert.ok(manages('late.example.com')(routerUpdates.at(-1)), 'the poll publishes late.example.com as managed');
+  assert.ok(manages('late.example.com')(routerUpdates.at(-1)!), 'the poll publishes late.example.com as managed');
 
   await waitFor(() => batchedHostnames(stub).includes('late.example.com'), 2000, 'a stub batch with late.example.com');
   await waitFor(() => dnsUpdates.some((u) => u.processedHostnames.includes('late.example.com')), 2000, 'the DNS pass with late to finish');
-  assert.deepEqual(dnsUpdates.at(-1).processedHostnames, ['proxy.example.com', 'late.example.com']);
+  assert.deepEqual(dnsUpdates.at(-1)!.processedHostnames, ['proxy.example.com', 'late.example.com']);
   assert.equal(daemon.openEventStreams(), 0);
   assert.equal(logs.lines.filter((line) => line.includes('Docker event start')).length, 0);
   const warnings = logs.entries.filter((entry) => entry.level === 'WARN');
@@ -225,11 +228,11 @@ test('direct mode: every poll re-lists containers and picks up a container added
   assert.ok(daemon.stats.listRequests > listBefore, 'the poll re-listed containers');
   assert.equal(routerUpdates.length, updatesBefore + 1, 'the nested poll from the label update is skipped');
   assert.ok(logs.lines.some((line) => line.includes('Skipping poll - another poll cycle is already in progress')));
-  assert.ok(routerUpdates.at(-1).hostnames.includes('direct.example.com'));
+  assert.ok(routerUpdates.at(-1)!.hostnames.includes('direct.example.com'));
 
   await waitFor(() => stub.batches.slice(batchesBefore).some((batch) => batch.some((record) => record.name === 'direct.example.com')), 2000, 'a stub batch with direct.example.com');
   await waitFor(() => dnsUpdates.some((u) => u.processedHostnames.includes('direct.example.com')), 2000, 'the DNS pass with direct to finish');
-  assert.deepEqual(dnsUpdates.at(-1).processedHostnames.slice().sort(), ['base.example.com', 'direct.example.com']);
+  assert.deepEqual(dnsUpdates.at(-1)!.processedHostnames.slice().sort(), ['base.example.com', 'direct.example.com']);
   assert.equal(logs.lines.filter((line) => line.includes('Docker event start')).length, 0);
   assert.equal(faults.length, 0, faultSummary(faults));
 });

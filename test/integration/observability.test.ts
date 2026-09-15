@@ -1,10 +1,10 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { startTraefikPipeline, batchedHostnames } from '../helpers/pipeline';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { LogEntry } from '../../types/test';
 
 installExitWatchdog();
 
@@ -25,7 +25,7 @@ const ROUTERS = [
 
 const RECONNECTED = /Docker event stream reconnected after \d+ attempt\(s\); re-listed (\d+) running containers \(trigger=reconnect\)$/;
 
-function infoLines(entries) {
+function infoLines(entries: LogEntry[]) {
   return entries.filter((entry) => entry.level === 'INFO').map((entry) => entry.text);
 }
 
@@ -53,7 +53,7 @@ test('(m) at INFO, an event and a reconnect produce the catalogue lines and no e
   const info = infoLines(logs.entries);
   assert.ok(info.some((text) => text.endsWith('Docker event start newapp')), 'Docker event start newapp');
   assert.ok(info.some((text) => text.includes('Docker labels refreshed (trigger=event)')), 'trigger=event');
-  assert.equal(Number(RECONNECTED.exec(info.find((text) => RECONNECTED.test(text)))[1]), 2);
+  assert.equal(Number(RECONNECTED.exec(info.find((text) => RECONNECTED.test(text))!)![1]), 2);
   assert.ok(info.some((text) => /Managing \d+ hostnames \(\+newapp\.example\.com\)/.test(text)), 'managed-set line for newapp');
   assert.ok(info.some((text) => /Managing 1 hostnames$/.test(text)), 'managed-set line for the first pass');
 

@@ -1,10 +1,10 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { startTraefikPipeline, batchedHostnames } from '../helpers/pipeline';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { EventPayloads } from '../../types/events';
 
 installExitWatchdog();
 
@@ -23,10 +23,10 @@ const ROUTERS = [
   { name: 'newapp@docker', provider: 'docker', entryPoints: ['https'], service: 'newapp', rule: 'Host(`newapp.example.com`)', status: 'enabled' }
 ];
 
-const managesNewapp = (update) =>
+const managesNewapp = (update: EventPayloads['traefik:routers:updated']) =>
   update.hostnames.includes('newapp.example.com') && update.containerLabels['newapp.example.com']?.['dns.manage'] === 'true';
 
-for (const [label, apiVersion] of [['(a)', 1.54], ['(b)', 1.47]]) {
+for (const [label, apiVersion] of [['(a)', 1.54], ['(b)', 1.47]] as const) {
   test(`${label} an API ${apiVersion} start event brings the new container's hostname to the DNS provider`, async (t) => {
     const logs = captureLogs(t, 'INFO');
     const pipeline = await startTraefikPipeline(t, { apiVersion, containers: [PROXY], routers: ROUTERS, noise: true });

@@ -6,7 +6,7 @@
  * @param {string} [description='condition'] - Used in the timeout error message.
  * @returns {Promise<T>} The first truthy value returned by `predicate`.
  */
-async function waitFor<T>(predicate: () => T | Promise<T>, timeoutMs: number = 2000, description: string = 'condition'): Promise<T> {
+async function waitFor<T>(predicate: () => T | Promise<T>, timeoutMs: number = 2000, description: string = 'condition'): Promise<NonNullable<T>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await predicate();

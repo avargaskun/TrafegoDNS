@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import TraefikMonitor from '../../src/services/TraefikMonitor';
@@ -10,10 +9,13 @@ import { captureLogs } from '../helpers/logCapture';
 import { startFakeTraefik } from '../helpers/fakeTraefik';
 import { startFakeCloudflare } from '../helpers/fakeCloudflare';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { TestContext } from 'node:test';
+import type { EventPayloads } from '../../types/events';
+import type { FakeCloudflare } from '../../types/test';
 
 installExitWatchdog();
 
-function routers(count) {
+function routers(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     name: `r${i}@docker`,
     provider: 'docker',
@@ -24,7 +26,7 @@ function routers(count) {
   }));
 }
 
-async function setup(t, count) {
+async function setup(t: TestContext, count: number) {
   captureLogs(t);
   const traefik = await startFakeTraefik({ routers: routers(count) });
   const bus = new EventBus();
@@ -64,7 +66,7 @@ test('an empty router list takes a single request', async (t) => {
 
 test('a poll publishes the hostnames of routers beyond the first page', async (t) => {
   const { bus, monitor } = await setup(t, 250);
-  const published = [];
+  const published: Array<EventPayloads['traefik:routers:updated']> = [];
   bus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => published.push(data));
 
   await monitor.pollTraefikAPI();
@@ -85,7 +87,7 @@ test('a refused connection keeps the Traefik-specific error message', async (t) 
   assert.equal(error.message, 'Connection refused to Traefik API at http://127.0.0.1:1/api. Is Traefik running?');
 });
 
-function dnsRecords(count) {
+function dnsRecords(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     id: `rec-${i}`,
     type: 'CNAME',
@@ -96,7 +98,7 @@ function dnsRecords(count) {
   }));
 }
 
-async function setupCloudflare(t, count) {
+async function setupCloudflare(t: TestContext, count: number) {
   captureLogs(t);
   const cloudflare = await startFakeCloudflare({ records: dnsRecords(count) });
   const provider = new CloudflareProvider(makeConfig());
@@ -105,17 +107,17 @@ async function setupCloudflare(t, count) {
   return { cloudflare, provider };
 }
 
-function recordPageRequests(cloudflare) {
+function recordPageRequests(cloudflare: FakeCloudflare) {
   return cloudflare.requests
     .filter((request) => request.method === 'GET' && request.path.endsWith('/zones/zone-1/dns_records'))
     .map((request) => request.query);
 }
 
-function rejectionOf(promise) {
+function rejectionOf(promise: Promise<unknown>) {
   return promise.then(() => null, (error) => error);
 }
 
-async function cachedRecordIds(provider) {
+async function cachedRecordIds(provider: CloudflareProvider) {
   return (await provider.getRecordsFromCache()).map((record) => record.id);
 }
 

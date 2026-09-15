@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,16 +12,19 @@ import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { startFakeCloudflare } from '../helpers/fakeCloudflare';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { TestContext } from 'node:test';
+import type { EventPayloads } from '../../types/events';
+import type { CapturedLogs, FakeCloudflare, FakeCloudflareRecord, LogLevelName, ProcessFault } from '../../types/test';
 
 installExitWatchdog();
 
 const SECRET_MARKERS = ['SYNTHETIC-TOKEN-123', 'Authorization', 'Bearer'];
 const GUARD_LINE = 'Error in traefik:routers:updated subscriber:';
 
-function recordProcessFaults(t) {
-  const faults = [];
-  const onRejection = (reason) => faults.push(['unhandledRejection', reason]);
-  const onException = (error) => faults.push(['uncaughtException', error]);
+function recordProcessFaults(t: TestContext) {
+  const faults: ProcessFault[] = [];
+  const onRejection = (reason: unknown) => faults.push(['unhandledRejection', reason]);
+  const onException = (error: Error) => faults.push(['uncaughtException', error]);
   process.on('unhandledRejection', onRejection);
   process.on('uncaughtException', onException);
   t.after(() => {
@@ -32,17 +34,17 @@ function recordProcessFaults(t) {
   return faults;
 }
 
-async function assertNoFaults(faults) {
+async function assertNoFaults(faults: ProcessFault[]) {
   await new Promise(setImmediate);
   assert.equal(faults.length, 0, faults.map(([kind]) => kind).join(', '));
 }
 
-function assertNoSecrets(lines) {
+function assertNoSecrets(lines: string[]) {
   const leaking = lines.filter((line) => SECRET_MARKERS.some((marker) => line.includes(marker)));
   assert.equal(leaking.length, 0, `${leaking.length} captured log lines contain a secret marker`);
 }
 
-async function setup(t, { records = [] } = {}) {
+async function setup(t: TestContext, { records = [] }: { records?: FakeCloudflareRecord[] } = {}) {
   const logs = captureLogs(t, 'DEBUG');
   const faults = recordProcessFaults(t);
   const cloudflare = await startFakeCloudflare({ records });
@@ -52,21 +54,21 @@ async function setup(t, { records = [] } = {}) {
   provider.client.defaults.baseURL = cloudflare.baseURL;
   const bus = new EventBus();
   const dnsManager = new DNSManager(config, bus, { dnsProvider: provider, dataDir });
-  const updates = [];
+  const updates: Array<EventPayloads['dns:records:updated']> = [];
   bus.subscribe(EventTypes.DNS_RECORDS_UPDATED, (data) => updates.push(data));
   t.after(async () => {
     await cloudflare.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
-  const publish = (hostnames) => bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, { hostnames, containerLabels: {} });
+  const publish = (hostnames: string[]) => bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, { hostnames, containerLabels: {} });
   return { logs, faults, cloudflare, dnsManager, updates, publish };
 }
 
-function succeeded(cloudflare, method, name) {
+function succeeded(cloudflare: FakeCloudflare, method: string, name: string) {
   return cloudflare.requests.some((r) => r.method === method && r.status === 200 && r.body?.name === name);
 }
 
-function hasLine(logs, level, text) {
+function hasLine(logs: CapturedLogs, level: LogLevelName, text: string) {
   return logs.entries.some((entry) => entry.level === level && entry.text.includes(text));
 }
 
@@ -79,7 +81,7 @@ test('a rejected Cloudflare call never leaks the token and never crashes the pro
     publish(['new.example.com']);
     await waitFor(() => logs.lines.some((line) => line.includes(GUARD_LINE)), 2000, 'the EventBus guard line');
 
-    const guard = logs.entries.find((entry) => entry.text.includes(GUARD_LINE));
+    const guard = logs.entries.find((entry) => entry.text.includes(GUARD_LINE))!;
     assert.equal(guard.level, 'ERROR');
     assert.match(guard.text, /Request failed with status code 525 code=ERR_BAD_RESPONSE status=525$/);
     assert.equal(updates.length, 0);

@@ -203,3 +203,5 @@ export interface TraefikPipeline {
   dnsUpdates: Array<EventPayloads['dns:records:updated']>;
   boot: () => Promise<void>;
 }
+
+export type ProcessFault = [kind: 'unhandledRejection' | 'uncaughtException', error: any];
