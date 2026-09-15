@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventBus } from '../../src/events/EventBus';
@@ -6,8 +5,10 @@ import EventTypes from '../../src/events/EventTypes';
 import { describeError } from '../../src/utils/errors';
 import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
+import type { TestContext } from 'node:test';
+import type { EventPayloads } from '../../types/events';
 
-function axiosLikeError(message) {
+function axiosLikeError(message: string) {
   return Object.assign(new Error(message), {
     code: 'ERR_BAD_RESPONSE',
     config: { headers: { Authorization: 'Bearer SYNTHETIC-TOKEN' } },
@@ -15,9 +16,9 @@ function axiosLikeError(message) {
   });
 }
 
-function trackUnhandledRejections(t) {
-  const reasons = [];
-  const listener = (reason) => reasons.push(reason);
+function trackUnhandledRejections(t: TestContext) {
+  const reasons: unknown[] = [];
+  const listener = (reason: unknown) => reasons.push(reason);
   process.on('unhandledRejection', listener);
   t.after(() => process.off('unhandledRejection', listener));
   return reasons;
@@ -27,7 +28,7 @@ test('a throwing or rejecting subscriber is logged sanitised and does not stop t
   const { entries, lines } = captureLogs(t);
   const unhandled = trackUnhandledRejections(t);
   const bus = new EventBus();
-  const received = [];
+  const received: unknown[] = [];
 
   bus.subscribe(EventTypes.DNS_RECORDS_UPDATED, () => {
     throw axiosLikeError('sync subscriber failed');
@@ -37,7 +38,7 @@ test('a throwing or rejecting subscriber is logged sanitised and does not stop t
   });
   bus.subscribe(EventTypes.DNS_RECORDS_UPDATED, (data) => received.push(data));
 
-  bus.publish(EventTypes.DNS_RECORDS_UPDATED, { stats: 1 });
+  bus.publish(EventTypes.DNS_RECORDS_UPDATED, { stats: 1 } as unknown as EventPayloads['dns:records:updated']);
 
   assert.deepEqual(received, [{ stats: 1 }]);
   await waitFor(() => entries.filter((e) => e.level === 'ERROR').length === 2, 1000, 'both subscriber errors to be logged');
@@ -66,12 +67,12 @@ test('unsubscribing removes the wrapped handler', (t) => {
     keptCalls += 1;
   });
 
-  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, {});
+  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, {} as EventPayloads['docker:labels:updated']);
   assert.equal(removedCalls, 1);
   assert.equal(keptCalls, 1);
 
   unsubscribe();
-  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, {});
+  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, {} as EventPayloads['docker:labels:updated']);
   assert.equal(removedCalls, 1);
   assert.equal(keptCalls, 2);
 });

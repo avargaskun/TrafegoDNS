@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -17,30 +16,33 @@ import { extractDnsLabels, getLabelValue } from '../../src/utils/dns';
 import { extractHostnamesFromRule } from '../../src/utils/traefik';
 import { makeConfig } from '../helpers/config';
 import * as golden from '../fixtures/goldenAttribution';
+import type { ContainerSummary, LabelMap } from '../../types/docker';
+import type { HostnameLabelsResult, RouterRef } from '../../types/traefik';
+import type { FakeContainer, FakeTraefikRouter } from '../../types/test';
 
 const cfg = makeConfig();
 
-function toContainer(c) {
-  return { id: c.Id, name: c.Names[0].replace(/^\//, ''), labels: c.Labels };
+function toContainer(c: FakeContainer): ContainerSummary {
+  return { id: c.Id, name: c.Names[0].replace(/^\//, ''), labels: c.Labels! };
 }
 
-function toRef(router) {
-  return { name: router.name, provider: router.provider, entryPoints: router.entryPoints, service: router.service };
+function toRef(router: FakeTraefikRouter): RouterRef {
+  return { name: router.name, provider: router.provider, entryPoints: router.entryPoints, service: router.service! };
 }
 
-function buildHostnameRouters(routers) {
-  const hostnameRouters = new Map();
+function buildHostnameRouters(routers: FakeTraefikRouter[]) {
+  const hostnameRouters = new Map<string, RouterRef[]>();
   for (const router of routers) {
     if (!router.rule || !router.rule.includes('Host')) continue;
     for (const hostname of new Set(extractHostnamesFromRule(router.rule))) {
       if (!hostnameRouters.has(hostname)) hostnameRouters.set(hostname, []);
-      hostnameRouters.get(hostname).push(toRef(router));
+      hostnameRouters.get(hostname)!.push(toRef(router));
     }
   }
   return hostnameRouters;
 }
 
-function managedHostnames(hostnameRouters, result) {
+function managedHostnames(hostnameRouters: Map<string, RouterRef[]>, result: HostnameLabelsResult) {
   const managed = [];
   for (const hostname of hostnameRouters.keys()) {
     if (result.excludedHostnames.has(hostname)) continue;
@@ -52,15 +54,15 @@ function managedHostnames(hostnameRouters, result) {
   return managed.sort();
 }
 
-function container(name, labels) {
+function container(name: string, labels: LabelMap): ContainerSummary {
   return { id: `${name}-id`, name, labels };
 }
 
-function dockerRef(name, entryPoints = ['https']) {
+function dockerRef(name: string, entryPoints: string[] = ['https']): RouterRef {
   return { name, provider: 'docker', entryPoints, service: name.replace(/@docker$/, '') };
 }
 
-function resolveOwner(ref, containers) {
+function resolveOwner(ref: RouterRef, containers: ContainerSummary[]) {
   return resolveRouterOwner(ref, candidatePools(containers, cfg), cfg);
 }
 
@@ -92,18 +94,18 @@ test('golden set: findRouterOwner attributes every router exactly', () => {
     const expectedVia = golden.expectedFallbackRouters.includes(router.name) ? 'fallback' : attributed ? 'strict' : null;
     assert.equal(result.via, expectedVia, `via of ${router.name}`);
   }
-  const shared = findRouterOwner(toRef(golden.routers.find((r) => r.name === 'shared@docker')), goldenCandidates, cfg);
+  const shared = findRouterOwner(toRef(golden.routers.find((r) => r.name === 'shared@docker')!), goldenCandidates, cfg);
   assert.deepEqual(shared.owners.map((o) => o.name), ['left', 'right']);
 });
 
 test('golden set: attribution uses the documented step for each owner', () => {
-  const reasonOf = (name) => findRouterOwner(toRef(golden.routers.find((r) => r.name === name)), goldenCandidates, cfg).reason;
+  const reasonOf = (name: string) => findRouterOwner(toRef(golden.routers.find((r) => r.name === name)!), goldenCandidates, cfg).reason;
   assert.equal(reasonOf('app@docker'), 'router-labels');
   assert.equal(reasonOf('blog-admin@docker'), 'router-labels');
   assert.equal(reasonOf('https-foo@docker'), 'entrypoint-split');
   assert.equal(reasonOf('plain-stack@docker'), 'default-router');
   assert.equal(reasonOf('files@file'), 'not-docker');
-  assert.equal(resolveRouterOwner(toRef(golden.routers.find((r) => r.name === 'legacy@docker')), goldenPools, cfg).reason, 'router-labels');
+  assert.equal(resolveRouterOwner(toRef(golden.routers.find((r) => r.name === 'legacy@docker')!), goldenPools, cfg).reason, 'router-labels');
 });
 
 test('golden set: resolveHostnameLabels excludes the ambiguous hostname once and yields the managed set', () => {
@@ -165,7 +167,7 @@ test('scaled replicas with identical DNS labels are not ambiguous and the first 
   const replicas = [container('web-2', { ...labels }), container('web-1', { ...labels })];
   const result = findRouterOwner(dockerRef('web@docker'), replicas, cfg);
   assert.equal(result.ambiguous, false);
-  assert.equal(result.owner.name, 'web-1');
+  assert.equal(result.owner!.name, 'web-1');
   assert.deepEqual(result.owners.map((o) => o.name), ['web-1', 'web-2']);
 
   const resolved = resolveHostnameLabels(new Map([['web.example.com', [dockerRef('web@docker')]]]), replicas, cfg);
@@ -219,17 +221,17 @@ test('@file and @internal routers have no owner, even when a container carries m
     assert.equal(result.ambiguous, false, ref.name);
   }
   const fromName = findRouterOwner({ name: 'files@docker', entryPoints: ['https'], service: 'files' }, [lookalike], cfg);
-  assert.equal(fromName.owner.name, 'files');
+  assert.equal(fromName.owner!.name, 'files');
 });
 
 test('router base matching is case-insensitive', () => {
   const app = container('app', { 'traefik.enable': 'true', 'traefik.http.routers.app.rule': 'Host(`app.example.com`)' });
-  assert.equal(findRouterOwner(dockerRef('App@docker'), [app], cfg).owner.name, 'app');
-  assert.equal(findRouterOwner(dockerRef('app@DOCKER'), [app], cfg).owner.name, 'app');
+  assert.equal(findRouterOwner(dockerRef('App@docker'), [app], cfg).owner!.name, 'app');
+  assert.equal(findRouterOwner(dockerRef('app@DOCKER'), [app], cfg).owner!.name, 'app');
 
   const mixed = container('mixed', { 'traefik.enable': 'true', 'traefik.http.routers.MyApp.rule': 'Host(`myapp.example.com`)' });
   assert.equal(hasRouterLabels(mixed, 'myapp', cfg), true);
-  assert.equal(findRouterOwner(dockerRef('myapp@docker'), [mixed], cfg).owner.name, 'mixed');
+  assert.equal(findRouterOwner(dockerRef('myapp@docker'), [mixed], cfg).owner!.name, 'mixed');
 });
 
 test('router base matching is exact, never a substring or a container id', () => {
@@ -241,14 +243,14 @@ test('router base matching is exact, never a substring or a container id', () =>
 
 test('the entrypoint split applies only to single-entrypoint routers whose own labels are missing', () => {
   const foo = container('foo', { 'traefik.enable': 'true', 'traefik.http.routers.foo.rule': 'Host(`foo.example.com`)' });
-  assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['https']), [foo], cfg).owner.name, 'foo');
+  assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['https']), [foo], cfg).owner!.name, 'foo');
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['http', 'https']), [foo], cfg).owner, null);
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['https', 'http']), [foo], cfg).owner, null);
   assert.equal(findRouterOwner(dockerRef('https-foo@docker', ['web']), [foo], cfg).owner, null);
 
   const splitDefault = container('bar', { 'traefik.enable': 'true' });
   const result = findRouterOwner(dockerRef('https-bar@docker', ['https']), [splitDefault], cfg);
-  assert.equal(result.owner.name, 'bar');
+  assert.equal(result.owner!.name, 'bar');
   assert.equal(result.reason, 'default-router');
 });
 
@@ -315,7 +317,7 @@ test('a skip owner wins over managers on a shared hostname and raises no conflic
 test('isFallbackCandidate is true only when the traefik.enable label is absent, and the candidate pools are disjoint', () => {
   assert.equal(isFallbackCandidate(container('a', {}), cfg), true);
   assert.equal(isFallbackCandidate(container('a', { 'dns.manage': 'true' }), cfg), true);
-  assert.equal(isFallbackCandidate({ id: 'x', name: 'x' }, cfg), true);
+  assert.equal(isFallbackCandidate({ id: 'x', name: 'x' } as ContainerSummary, cfg), true);
   for (const value of ['false', 'true', 'TRUE', '', '1']) {
     assert.equal(isFallbackCandidate(container('a', { 'traefik.enable': value }), cfg), false, `traefik.enable=${JSON.stringify(value)}`);
   }
@@ -357,7 +359,7 @@ test('the strict pass finishes before the fallback runs, including its default-r
   });
   const stale = container('stale', { 'traefik.http.routers.plain-stack.rule': 'Host(`plain.example.com`)', 'dns.proxied': 'false' });
   const result = resolveOwner(dockerRef('plain-stack@docker'), [stale, plain]);
-  assert.equal(result.owner.name, 'plain');
+  assert.equal(result.owner!.name, 'plain');
   assert.equal(result.via, 'strict');
   assert.equal(result.reason, 'default-router');
   assert.equal(result.ambiguous, false);
@@ -370,7 +372,7 @@ test('a container without traefik.enable owns its default router through the fal
     'dns.manage': 'true'
   });
   const bare = container('solo', { 'dns.manage': 'true' });
-  const cases = [
+  const cases: Array<[ContainerSummary, RouterRef]> = [
     [compose, dockerRef('web-legacy@docker')],
     [bare, dockerRef('solo@docker')]
   ];
@@ -385,7 +387,7 @@ test('a container without traefik.enable owns its default router through the fal
 test('the entrypoint split applies in the fallback pass', () => {
   const legacy = container('legacy', { 'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)', 'dns.manage': 'true' });
   const result = resolveOwner(dockerRef('https-legacy@docker', ['https']), [legacy]);
-  assert.equal(result.owner.name, 'legacy');
+  assert.equal(result.owner!.name, 'legacy');
   assert.equal(result.reason, 'entrypoint-split');
   assert.equal(result.via, 'fallback');
 });
@@ -404,7 +406,7 @@ test('strict ambiguity is never resolved by the fallback', () => {
 test('a container without traefik.enable owns an unclaimed router through the fallback', () => {
   const legacy = container('legacy', { 'traefik.http.routers.legacy.rule': 'Host(`legacy.example.com`)', 'dns.manage': 'true' });
   const owner = resolveOwner(dockerRef('legacy@docker'), [legacy]);
-  assert.equal(owner.owner.name, 'legacy');
+  assert.equal(owner.owner!.name, 'legacy');
   assert.equal(owner.via, 'fallback');
   assert.equal(owner.reason, 'router-labels');
 
@@ -419,7 +421,7 @@ test('an enabled claimant beats a container without traefik.enable, and the fall
   const app = container('app', { 'traefik.enable': 'true', 'traefik.http.routers.shared2.rule': 'Host(`shared2.example.com`)', 'dns.manage': 'true' });
   const legacy = container('legacy', { 'traefik.http.routers.shared2.rule': 'Host(`shared2.example.com`)', 'dns.proxied': 'false' });
   const owner = resolveOwner(dockerRef('shared2@docker'), [app, legacy]);
-  assert.equal(owner.owner.name, 'app');
+  assert.equal(owner.owner!.name, 'app');
   assert.equal(owner.via, 'strict');
   assert.equal(owner.ambiguous, false);
   assert.deepEqual(owner.owners.map((o) => o.name), ['app']);
@@ -472,7 +474,7 @@ test('fallback ambiguity follows the same DNS-label rule as the strict pass', ()
   const replicaA = container('legacy-a', { 'traefik.http.routers.legacy.rule': rule, 'dns.manage': 'true' });
   const replicaB = container('legacy-b', { 'traefik.http.routers.legacy.rule': rule, 'dns.manage': 'true' });
   const replicas = resolveOwner(ref, [replicaB, replicaA]);
-  assert.equal(replicas.owner.name, 'legacy-a');
+  assert.equal(replicas.owner!.name, 'legacy-a');
   assert.equal(replicas.via, 'fallback');
   assert.equal(replicas.ambiguous, false);
 
@@ -501,7 +503,7 @@ test('fallbackRouters omits fallback owners that carry no DNS labels', () => {
   const solo = container('solo', {});
   const ref = dockerRef('solo@docker');
   const owner = resolveOwner(ref, [solo]);
-  assert.equal(owner.owner.name, 'solo');
+  assert.equal(owner.owner!.name, 'solo');
   assert.equal(owner.via, 'fallback');
 
   const result = resolveHostnameLabels(new Map([['solo.example.com', [ref]]]), [solo], cfg);

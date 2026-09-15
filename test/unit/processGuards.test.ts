@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -6,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const guardsPath = path.resolve(__dirname, '../../src/utils/processGuards.js');
 
-function runGuardedChild(failure) {
+function runGuardedChild(failure: string) {
   const code = [
     `require(${JSON.stringify(guardsPath)}).installProcessGuards();`,
     "const err = Object.assign(new Error('Request failed'), { config: { headers: { Authorization: 'Bearer SYNTHETIC-TOKEN' } }, response: { status: 525 } });",
@@ -19,7 +18,7 @@ function runGuardedChild(failure) {
   });
 }
 
-function assertNoToken(result) {
+function assertNoToken(result: ReturnType<typeof runGuardedChild>) {
   assert.ok(!result.stdout.includes('SYNTHETIC-TOKEN'), `stdout leaked token: ${result.stdout}`);
   assert.ok(!result.stderr.includes('SYNTHETIC-TOKEN'), `stderr leaked token: ${result.stderr}`);
 }

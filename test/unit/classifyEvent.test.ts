@@ -1,12 +1,12 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import DockerMonitor from '../../src/services/DockerMonitor';
 import { classifyEvent, HANDLED_ACTIONS } from '../../src/services/DockerMonitor';
+import type { DockerEventLike } from '../../types/docker';
 
 const ID = 'c3'.repeat(32);
 
-function modernEvent(action, name = 'app', type = 'container') {
+function modernEvent(action: string, name: string = 'app', type: string = 'container') {
   return {
     Type: type,
     Action: action,
@@ -17,7 +17,7 @@ function modernEvent(action, name = 'app', type = 'container') {
   };
 }
 
-function legacyEvent(action, name = 'app') {
+function legacyEvent(action: string, name: string = 'app') {
   return { ...modernEvent(action, name), status: action, id: ID, from: 'ghcr.io/example/app:1.0' };
 }
 
@@ -64,6 +64,6 @@ test('exec, other health states, unhandled actions and non-container events retu
 
 test('malformed input returns null', () => {
   for (const value of [null, undefined, 42, 'start', [], {}, { Type: 'container' }, { Type: 'container', Action: 7 }]) {
-    assert.equal(classifyEvent(value), null, JSON.stringify(value));
+    assert.equal(classifyEvent(value as DockerEventLike), null, JSON.stringify(value));
   }
 });

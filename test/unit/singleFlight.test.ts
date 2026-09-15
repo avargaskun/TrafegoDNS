@@ -1,13 +1,12 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SingleFlight } from '../../src/utils/singleFlight';
 import { waitFor } from '../helpers/waitFor';
 
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
     reject = rej;
   });
@@ -15,15 +14,15 @@ function deferred() {
 }
 
 function makeControlledFlight() {
-  const calls = [];
-  const pending = [];
+  const calls: string[] = [];
+  const pending: Array<ReturnType<typeof deferred<string>>> = [];
   let active = 0;
   let maxActive = 0;
-  const sf = new SingleFlight(async (arg) => {
+  const sf = new SingleFlight(async (arg: string) => {
     active += 1;
     maxActive = Math.max(maxActive, active);
     calls.push(arg);
-    const d = deferred();
+    const d = deferred<string>();
     pending.push(d);
     try {
       return await d.promise;

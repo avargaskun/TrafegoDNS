@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { describeError, runGuarded } from '../../src/utils/errors';
@@ -14,7 +13,7 @@ function axiosLikeError() {
   });
 }
 
-function assertNoSecrets(text) {
+function assertNoSecrets(text: string) {
   assert.ok(!text.includes('SYNTHETIC-TOKEN'), `leaked token: ${text}`);
   assert.ok(!text.includes('Authorization'), `leaked header name: ${text}`);
   assert.ok(!text.includes('Bearer'), `leaked auth scheme: ${text}`);

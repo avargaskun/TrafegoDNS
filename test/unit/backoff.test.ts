@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeBackoffDelay, DEFAULT_TIMINGS } from '../../src/services/DockerMonitor';
