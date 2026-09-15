@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,26 +12,32 @@ import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { createStubDnsProvider } from '../helpers/stubDnsProvider';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { TestContext } from 'node:test';
+import type DNSProvider from '../../src/providers/base';
+import type { LabelMap } from '../../types/docker';
+import type { TrackedRecord } from '../../types/dns';
+import type { EventPayloads } from '../../types/events';
+import type { LogEntry, StubDnsProvider, StubDnsRecordConfig, TestConfig } from '../../types/test';
 
 installExitWatchdog();
 
 const MANAGE = { 'dns.manage': 'true' };
 
 function deferred() {
-  let resolve;
-  const promise = new Promise((res) => {
+  let resolve!: (value: void) => void;
+  const promise = new Promise<void>((res) => {
     resolve = res;
   });
   return { promise, resolve };
 }
 
-function makeTmpDir(t) {
+function makeTmpDir(t: TestContext): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trafegodns-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
 
-function trackerEntry(name, id, extra = {}) {
+function trackerEntry(name: string, id: string, extra: Partial<TrackedRecord> = {}): TrackedRecord {
   return {
     id,
     provider: 'cloudflare',
@@ -45,32 +50,32 @@ function trackerEntry(name, id, extra = {}) {
   };
 }
 
-function readTracker(dir) {
+function readTracker(dir: string): TrackedRecord[] {
   return JSON.parse(fs.readFileSync(path.join(dir, 'dns-records.json'), 'utf8'));
 }
 
-function createManager(t, { config = {}, stub = createStubDnsProvider(), seed } = {}) {
+function createManager(t: TestContext, { config = {}, stub = createStubDnsProvider(), seed }: { config?: Partial<TestConfig>; stub?: StubDnsProvider; seed?: TrackedRecord[] } = {}) {
   const dataDir = makeTmpDir(t);
   if (seed) fs.writeFileSync(path.join(dataDir, 'dns-records.json'), JSON.stringify(seed, null, 2), 'utf8');
   const bus = new EventBus();
-  const dnsManager = new DNSManager(makeConfig({ cleanupOrphaned: false, ...config }), bus, { dnsProvider: stub, dataDir });
-  const updates = [];
+  const dnsManager = new DNSManager(makeConfig({ cleanupOrphaned: false, ...config }), bus, { dnsProvider: stub as unknown as DNSProvider, dataDir });
+  const updates: Array<EventPayloads['dns:records:updated']> = [];
   bus.subscribe(EventTypes.DNS_RECORDS_UPDATED, (data) => updates.push(data));
   return { bus, dnsManager, stub, dataDir, updates };
 }
 
-function labelsFor(hostnames, labels = MANAGE) {
+function labelsFor(hostnames: string[], labels: LabelMap = MANAGE): Record<string, LabelMap> {
   return Object.fromEntries(hostnames.map((hostname) => [hostname, labels]));
 }
 
-async function runPass(harness, hostnames, containerLabels = labelsFor(hostnames)) {
+async function runPass(harness: ReturnType<typeof createManager>, hostnames: string[], containerLabels: Record<string, LabelMap> = labelsFor(hostnames)) {
   const before = harness.updates.length;
   harness.bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, { hostnames, containerLabels });
   await waitFor(() => harness.updates.length > before, 2000, 'DNS_RECORDS_UPDATED');
   return harness.updates[harness.updates.length - 1];
 }
 
-function managingLines(entries) {
+function managingLines(entries: LogEntry[]) {
   return entries
     .filter((entry) => entry.level === 'INFO' && / Managing \d+ hostnames/.test(entry.text))
     .map((entry) => entry.text.slice(entry.text.indexOf('Managing ')));
@@ -138,7 +143,7 @@ test('passes keep every pre-seeded tracker entry and change only id/updatedAt', 
   const after = readTracker(harness.dataDir);
   assert.equal(after.length, seed.length);
   const byName = new Map(after.map((entry) => [entry.name, entry]));
-  const expectedIds = { 'a.example.com': 'rec-a', 'b.example.com': 'rec-b', 'c.example.com': 'stub-1', 'gone.example.com': 'old-gone' };
+  const expectedIds: Record<string, string> = { 'a.example.com': 'rec-a', 'b.example.com': 'rec-b', 'c.example.com': 'stub-1', 'gone.example.com': 'old-gone' };
   for (const original of seed) {
     const entry = byName.get(original.name);
     assert.ok(entry, `tracker entry ${original.name} still exists`);
@@ -203,7 +208,7 @@ test('DNS passes never overlap, and publishes during a pass lead to one follow-u
   const original = stub.batchEnsureRecords;
   let active = 0;
   let maxActive = 0;
-  const batchEnsure = t.mock.method(stub, 'batchEnsureRecords', async (configs) => {
+  const batchEnsure = t.mock.method(stub, 'batchEnsureRecords', async (configs: StubDnsRecordConfig[]) => {
     active++;
     maxActive = Math.max(maxActive, active);
     try {
@@ -237,13 +242,13 @@ test('DNS passes never overlap, and publishes during a pass lead to one follow-u
 test('a failing pass is logged by the EventBus guard and the next pass still runs', async (t) => {
   const { entries } = captureLogs(t);
   const harness = createManager(t);
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   t.after(() => process.off('unhandledRejection', onUnhandled));
   const original = harness.stub.batchEnsureRecords;
   let fail = true;
-  t.mock.method(harness.stub, 'batchEnsureRecords', async (configs) => {
+  t.mock.method(harness.stub, 'batchEnsureRecords', async (configs: StubDnsRecordConfig[]) => {
     if (fail) throw new Error('provider unavailable');
     return original.call(harness.stub, configs);
   });
@@ -265,8 +270,8 @@ test('a failing pass is logged by the EventBus guard and the next pass still run
 test('a failed pass that several publishes joined is logged once', async (t) => {
   const { entries } = captureLogs(t);
   const harness = createManager(t);
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   t.after(() => process.off('unhandledRejection', onUnhandled));
   const gate = deferred();
@@ -277,7 +282,7 @@ test('a failed pass that several publishes joined is logged once', async (t) => 
   const guardLines = () => entries.filter(
     (entry) => entry.level === 'ERROR' && entry.text.includes('Error in traefik:routers:updated subscriber: provider unavailable')
   );
-  const publish = (hostname) => harness.bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, {
+  const publish = (hostname: string) => harness.bus.publish(EventTypes.TRAEFIK_ROUTERS_UPDATED, {
     hostnames: [hostname],
     containerLabels: labelsFor([hostname])
   });

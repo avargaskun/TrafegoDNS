@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
@@ -9,6 +8,10 @@ import { makeConfig } from '../helpers/config';
 import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type Docker from 'dockerode';
+import type { DockerEventLike, DockerMonitorTimings, LabelMap } from '../../types/docker';
+import type { EventPayloads } from '../../types/events';
+import type { FakeContainer, LogEntry } from '../../types/test';
 
 installExitWatchdog();
 
@@ -16,21 +19,21 @@ const APP_ID = 'a1'.repeat(32);
 const DB_ID = 'b2'.repeat(32);
 const APP_LABELS = { 'traefik.enable': 'true', 'dns.manage': 'true' };
 
-function dockerContainer(id, name, labels) {
+function dockerContainer(id: string, name: string, labels: LabelMap): FakeContainer {
   return { Id: id, Names: [`/${name}`], Labels: labels };
 }
 
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
     reject = rej;
   });
   return { promise, resolve, reject };
 }
 
-function hangUntilAborted(opts) {
+function hangUntilAborted(opts: { abortSignal: AbortSignal }): Promise<never> {
   return new Promise((_resolve, reject) => {
     // Stands in for the pending socket: AbortSignal.timeout's timer is unref'd and alone lets the loop drain.
     const keepAlive = setInterval(() => {}, 1000);
@@ -51,22 +54,33 @@ const FAST_TIMINGS = {
   refreshTimeoutMs: 500
 };
 
-function openStream(state) {
+type ListCall = Docker.ContainerListOptions & { abortSignal: AbortSignal };
+type EventsCall = Docker.GetEventsOptions & { abortSignal: AbortSignal };
+
+interface HarnessState {
+  listCalls: ListCall[];
+  respond: (opts: ListCall) => Promise<FakeContainer[]>;
+  eventsCalls: EventsCall[];
+  streams: PassThrough[];
+  events: (opts: EventsCall) => Promise<PassThrough>;
+}
+
+function openStream(state: HarnessState): PassThrough {
   const stream = new PassThrough();
   state.streams.push(stream);
   return stream;
 }
 
-function createHarness({ timings } = {}) {
+function createHarness({ timings }: { timings?: Partial<DockerMonitorTimings> } = {}) {
   const bus = new EventBus();
-  const published = [];
-  const timeline = [];
+  const published: Array<EventPayloads['docker:labels:updated']> = [];
+  const timeline: string[] = [];
   bus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => {
     published.push(data);
     timeline.push(`labels:${data.trigger}`);
   });
-  const started = [];
-  const stopped = [];
+  const started: Array<EventPayloads['docker:container:started']> = [];
+  const stopped: Array<EventPayloads['docker:container:stopped']> = [];
   bus.subscribe(EventTypes.DOCKER_CONTAINER_STARTED, (data) => {
     started.push(data);
     timeline.push('started');
@@ -75,7 +89,7 @@ function createHarness({ timings } = {}) {
     stopped.push(data);
     timeline.push('stopped');
   });
-  const state = {
+  const state: HarnessState = {
     listCalls: [],
     respond: async () => [],
     eventsCalls: [],
@@ -83,24 +97,24 @@ function createHarness({ timings } = {}) {
     events: async () => openStream(state)
   };
   const docker = {
-    listContainers: (opts) => {
+    listContainers: (opts: ListCall) => {
       state.listCalls.push(opts);
       return state.respond(opts);
     },
-    getEvents: (opts) => {
+    getEvents: (opts: EventsCall) => {
       state.eventsCalls.push(opts);
       return state.events(opts);
     }
-  };
+  } as unknown as Docker;
   const monitor = new DockerMonitor(makeConfig(), bus, { docker, timings, random: () => 0.5 });
   return { monitor, published, started, stopped, timeline, state };
 }
 
-function linesContaining(entries, text) {
+function linesContaining(entries: LogEntry[], text: string) {
   return entries.filter((entry) => entry.text.includes(text));
 }
 
-function containerEvent(action, name, id) {
+function containerEvent(action: string, name: string, id: string) {
   return {
     Type: 'container',
     Action: action,
@@ -111,11 +125,11 @@ function containerEvent(action, name, id) {
   };
 }
 
-function writeEvent(stream, event) {
+function writeEvent(stream: PassThrough, event: DockerEventLike) {
   stream.write(`${JSON.stringify(event)}\n`);
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -230,7 +244,7 @@ test('failed and timed-out refreshes keep the last good cache, publish nothing a
 test('refreshes requested during a pending list coalesce into one rerun', async (t) => {
   captureLogs(t);
   const { monitor, published, state } = createHarness();
-  const responses = [deferred(), deferred()];
+  const responses = [deferred<FakeContainer[]>(), deferred<FakeContainer[]>()];
   state.respond = () => responses[state.listCalls.length - 1].promise;
 
   const first = monitor.refreshLabels('boot');
@@ -285,7 +299,7 @@ test('a container with DNS labels that stops running is reported once', async (t
   assert.equal(removals[0].level, 'INFO');
   assert.match(removals[0].text, /Container app with DNS labels is no longer running$/);
   assert.equal(linesContaining(entries, 'was removed').length, 0);
-  assert.equal(published.at(-1).hasChanges, true);
+  assert.equal(published.at(-1)!.hasChanges, true);
   assert.deepEqual(monitor.getContainers().map((container) => container.name), ['db']);
 });
 
@@ -477,7 +491,7 @@ test('stopWatching cancels pending reconnects and debounces, and a restart still
   state.events = openStreamOk;
   await monitor.startWatching();
   assert.equal(state.listCalls.length, 2);
-  writeEvent(state.streams.at(-1), containerEvent('start', 'app', APP_ID));
+  writeEvent(state.streams.at(-1)!, containerEvent('start', 'app', APP_ID));
 
   await waitFor(() => published.some((payload) => payload.trigger === 'event'), 2000, 'an event refresh after the restart');
   assert.deepEqual(published.map((payload) => payload.trigger), ['boot', 'boot', 'event']);
@@ -529,7 +543,7 @@ test('a getEvents that never answers is aborted after connectTimeoutMs, so start
 test('a getEvents that resolves after stopWatching is destroyed and never re-listed', async (t) => {
   const { entries } = captureLogs(t);
   const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
-  const pending = deferred();
+  const pending = deferred<PassThrough>();
   state.events = () => pending.promise;
   t.after(() => monitor.stopWatching());
 
@@ -560,7 +574,7 @@ test('only a connection that stayed up for stableConnectionMs resets the reconne
   t.after(() => monitor.stopWatching());
   const reconnectedLines = () => linesContaining(entries, 'Docker event stream reconnected');
   const attemptDelays = () => linesContaining(entries, 'Docker event stream reconnect attempt')
-    .map((entry) => Number(/ in (\d+) ms /.exec(entry.text)[1]));
+    .map((entry) => Number(/ in (\d+) ms /.exec(entry.text)![1]));
 
   await monitor.startWatching();
   await waitFor(() => reconnectedLines().length === 1, 2000, 'the first connection');
@@ -578,9 +592,9 @@ test('only a connection that stayed up for stableConnectionMs resets the reconne
 test('a stream that dies during its re-list is not a recovery', async (t) => {
   const { entries } = captureLogs(t);
   const { monitor, state } = createHarness({ timings: FAST_TIMINGS });
-  const lists = [];
+  const lists: Array<ReturnType<typeof deferred<FakeContainer[]>>> = [];
   state.respond = () => {
-    const pending = deferred();
+    const pending = deferred<FakeContainer[]>();
     lists.push(pending);
     return pending.promise;
   };

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import TraefikMonitor from '../../src/services/TraefikMonitor';
@@ -8,20 +7,26 @@ import { makeConfig } from '../helpers/config';
 import { captureLogs } from '../helpers/logCapture';
 import { waitFor } from '../helpers/waitFor';
 import { installExitWatchdog } from '../helpers/exitWatchdog';
+import type { Mock, TestContext } from 'node:test';
+import type DockerMonitor from '../../src/services/DockerMonitor';
+import type { ContainerSummary, LabelMap, RefreshTrigger } from '../../types/docker';
+import type { EventPayloads } from '../../types/events';
+import type { PollTrigger, TraefikRouter } from '../../types/traefik';
+import type { LogEntry, LogLevelName, TestConfig } from '../../types/test';
 
 installExitWatchdog();
 
 const SKIP_LINE = 'Skipping DNS pass: Docker container labels have not been loaded yet';
 
-function deferred() {
-  let resolve;
-  const promise = new Promise((res) => {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
     resolve = res;
   });
   return { promise, resolve };
 }
 
-function router(name, host, { provider = 'docker', entryPoints = ['https'], service } = {}) {
+function router(name: string, host: string, { provider = 'docker', entryPoints = ['https'], service }: { provider?: string; entryPoints?: string[]; service?: string } = {}) {
   return {
     name,
     provider,
@@ -32,32 +37,32 @@ function router(name, host, { provider = 'docker', entryPoints = ['https'], serv
   };
 }
 
-function container(name, labels) {
+function container(name: string, labels: LabelMap): ContainerSummary {
   return { id: `${name}-id`, name, labels };
 }
 
-function createMonitor(t, configOverrides = {}) {
+function createMonitor(t: TestContext, configOverrides: Partial<TestConfig> = {}) {
   const bus = new EventBus();
   const monitor = new TraefikMonitor(makeConfig(configOverrides), bus);
   t.after(() => monitor.stopPolling());
-  const routersUpdated = [];
-  const pollsCompleted = [];
-  const errors = [];
+  const routersUpdated: Array<EventPayloads['traefik:routers:updated']> = [];
+  const pollsCompleted: Array<EventPayloads['traefik:poll:completed']> = [];
+  const errors: Array<EventPayloads['error:occurred']> = [];
   bus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => routersUpdated.push(data));
   bus.subscribe(EventTypes.TRAEFIK_POLL_COMPLETED, (data) => pollsCompleted.push(data));
   bus.subscribe(EventTypes.ERROR_OCCURRED, (data) => errors.push(data));
   return { bus, monitor, routersUpdated, pollsCompleted, errors };
 }
 
-function setContainers(bus, containers) {
-  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, { containers, trigger: 'boot', hasChanges: true });
+function setContainers(bus: EventBus, containers: ContainerSummary[]) {
+  bus.publish(EventTypes.DOCKER_LABELS_UPDATED, { containers, trigger: 'boot', hasChanges: true } as EventPayloads['docker:labels:updated']);
 }
 
-function linesAt(entries, level, text) {
+function linesAt(entries: LogEntry[], level: LogLevelName, text: string) {
   return entries.filter((entry) => entry.level === level && entry.text.includes(text));
 }
 
-function triggersOf(runPoll) {
+function triggersOf(runPoll: Mock<TraefikMonitor['runPoll']>) {
   return runPoll.mock.calls.map((call) => call.arguments[0]);
 }
 
@@ -81,8 +86,8 @@ test('processRouters returns unique hostnames in first-seen order with the route
     { name: 'app@docker', provider: 'docker', entryPoints: ['https'], service: 'app' },
     { name: 'app-alt@docker', provider: 'docker', entryPoints: ['web', 'https'], service: 'app-alt' }
   ]);
-  assert.deepEqual(hostnameRouters.get('alt.example.com').map((ref) => ref.name), ['app-alt@docker']);
-  assert.deepEqual(hostnameRouters.get('twice.example.com').map((ref) => ref.name), ['twice@docker']);
+  assert.deepEqual(hostnameRouters.get('alt.example.com')!.map((ref) => ref.name), ['app-alt@docker']);
+  assert.deepEqual(hostnameRouters.get('twice.example.com')!.map((ref) => ref.name), ['twice@docker']);
 
   const keyed = Object.fromEntries(routers.map((r) => [r.name, r]));
   assert.deepEqual(monitor.processRouters(keyed).hostnames, hostnames);
@@ -91,7 +96,7 @@ test('processRouters returns unique hostnames in first-seen order with the route
 test('requests made during a running poll are served by exactly one trailing poll with the latest trigger', async (t) => {
   captureLogs(t);
   const { monitor, routersUpdated } = createMonitor(t);
-  const first = deferred();
+  const first = deferred<TraefikRouter[]>();
   let getRoutersCalls = 0;
   t.mock.method(monitor, 'getRouters', () => {
     getRoutersCalls++;
@@ -99,9 +104,9 @@ test('requests made during a running poll are served by exactly one trailing pol
   });
   const runPoll = t.mock.method(monitor, 'runPoll');
 
-  const initial = monitor.requestPoll('first');
+  const initial = monitor.requestPoll('first' as PollTrigger);
   await waitFor(() => getRoutersCalls === 1, 2000, 'the first poll to call getRouters');
-  const followers = [monitor.requestPoll('second'), monitor.requestPoll('third'), monitor.pollTraefikAPI('fourth')];
+  const followers = [monitor.requestPoll('second' as PollTrigger), monitor.requestPoll('third' as PollTrigger), monitor.pollTraefikAPI('fourth' as PollTrigger)];
   first.resolve([router('app@docker', 'app.example.com')]);
   await Promise.all([initial, ...followers]);
 
@@ -115,14 +120,14 @@ test('DOCKER_LABELS_UPDATED requests a poll only for event and reconnect trigger
   const { bus, monitor } = createMonitor(t);
   t.mock.method(monitor, 'getRouters', async () => []);
   const runPoll = t.mock.method(monitor, 'runPoll');
-  const labels = async (trigger) => {
+  const labels = async (trigger: RefreshTrigger) => {
     // Lets the runner clear its settled run, so a triggered poll starts at once instead of merging with the probe.
     await new Promise(setImmediate);
-    bus.publish(EventTypes.DOCKER_LABELS_UPDATED, { containers: [], trigger, hasChanges: true });
+    bus.publish(EventTypes.DOCKER_LABELS_UPDATED, { containers: [], trigger, hasChanges: true } as unknown as EventPayloads['docker:labels:updated']);
   };
 
   await labels('event');
-  await monitor.pollTraefikAPI('probe-before-start');
+  await monitor.pollTraefikAPI('probe-before-start' as PollTrigger);
   assert.deepEqual(triggersOf(runPoll), ['probe-before-start']);
 
   await monitor.startPolling();
@@ -130,40 +135,40 @@ test('DOCKER_LABELS_UPDATED requests a poll only for event and reconnect trigger
 
   await labels('poll');
   await labels('boot');
-  await monitor.pollTraefikAPI('probe-after-poll');
+  await monitor.pollTraefikAPI('probe-after-poll' as PollTrigger);
   assert.deepEqual(triggersOf(runPoll).slice(2), ['probe-after-poll']);
 
   await labels('event');
-  await monitor.pollTraefikAPI('probe-after-event');
+  await monitor.pollTraefikAPI('probe-after-event' as PollTrigger);
   assert.deepEqual(triggersOf(runPoll).slice(3), ['event', 'probe-after-event']);
 
   await labels('reconnect');
-  await monitor.pollTraefikAPI('probe-after-reconnect');
+  await monitor.pollTraefikAPI('probe-after-reconnect' as PollTrigger);
   assert.deepEqual(triggersOf(runPoll).slice(5), ['reconnect', 'probe-after-reconnect']);
 
   monitor.stopPolling();
   await labels('event');
-  await monitor.pollTraefikAPI('probe-after-stop');
+  await monitor.pollTraefikAPI('probe-after-stop' as PollTrigger);
   assert.deepEqual(triggersOf(runPoll).slice(7), ['probe-after-stop']);
 });
 
 test('polls refresh Docker labels after listing routers and publish nothing until labels have loaded', async (t) => {
   const logs = captureLogs(t);
   const { bus, monitor, routersUpdated, pollsCompleted } = createMonitor(t);
-  const timeline = [];
+  const timeline: string[] = [];
   t.mock.method(monitor, 'getRouters', async () => {
     timeline.push('getRouters');
     return [router('app@docker', 'app.example.com')];
   });
   let loaded = false;
   monitor.dockerMonitor = {
-    refreshLabels: async (trigger) => {
+    refreshLabels: async (trigger: RefreshTrigger) => {
       timeline.push(`refresh:${trigger}`);
       if (loaded) setContainers(bus, [container('app', { 'traefik.enable': 'true', 'traefik.http.routers.app.rule': 'Host(`app.example.com`)', 'dns.manage': 'true' })]);
       return loaded ? { ok: true, containerCount: 1, changed: [] } : { ok: false, error: new Error('unreachable') };
     },
     hasLoadedLabels: () => loaded
-  };
+  } as unknown as DockerMonitor;
 
   await monitor.pollTraefikAPI();
   await monitor.pollTraefikAPI();
@@ -194,7 +199,7 @@ test('without watchDockerEvents a poll neither refreshes labels nor waits for th
       return { ok: false };
     },
     hasLoadedLabels: () => false
-  };
+  } as unknown as DockerMonitor;
 
   await monitor.pollTraefikAPI();
 
@@ -390,7 +395,7 @@ test('a skipped or failed poll does not re-log a fallback-attributed router', as
   assert.equal(linesAt(logs.entries, 'INFO', line).length, 1);
   assert.equal(routersUpdated.length, 1);
 
-  monitor.dockerMonitor = { refreshLabels: async () => ({ ok: false, error: new Error('unreachable') }), hasLoadedLabels: () => false };
+  monitor.dockerMonitor = { refreshLabels: async () => ({ ok: false, error: new Error('unreachable') }), hasLoadedLabels: () => false } as unknown as DockerMonitor;
   await monitor.pollTraefikAPI();
   assert.equal(linesAt(logs.entries, 'WARN', SKIP_LINE).length, 1);
   assert.equal(routersUpdated.length, 1);
