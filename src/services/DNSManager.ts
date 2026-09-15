@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DNS Manager Service
  * Responsible for managing DNS records through the selected provider
@@ -9,9 +8,30 @@ import EventTypes from '../events/EventTypes';
 import { extractDnsConfigFromLabels } from '../utils/dns';
 import RecordTracker from '../utils/recordTracker';
 import { SingleFlight } from '../utils/singleFlight';
+import type ConfigManager from '../config/ConfigManager';
+import type { EventBus } from '../events/EventBus';
+import type DNSProvider from '../providers/base';
+import type { LabelMap } from '../../types/docker';
+import type { DnsRecordConfig, DnsStats } from '../../types/dns';
+
+interface DnsPassResult {
+  stats: DnsStats;
+  processedHostnames: string[];
+}
 
 class DNSManager {
-  constructor(config, eventBus, options = {}) {
+  declare config: ConfigManager;
+  declare eventBus: EventBus;
+  declare dnsProvider: DNSProvider;
+  declare recordTracker: RecordTracker;
+  declare loggedPreservedRecords: Set<string>;
+  declare stats: DnsStats;
+  declare previousStats: { upToDateCount: number };
+  declare previousManagedHostnames: Set<string> | null;
+  declare dnsPass: SingleFlight<[string[], Record<string, LabelMap>], DnsPassResult>;
+  declare reportedPass: Promise<DnsPassResult> | null;
+
+  constructor(config: ConfigManager, eventBus: EventBus, options: { dnsProvider?: DNSProvider; dataDir?: string } = {}) {
     this.config = config;
     this.eventBus = eventBus;
     this.dnsProvider = options.dnsProvider ?? DNSProviderFactory.createProvider(config);
@@ -48,7 +68,7 @@ class DNSManager {
   /**
    * Initialise the DNS Manager
    */
-  async init() {
+  async init(): Promise<boolean> {
     try {
       logger.debug('Initializing DNS Manager...');
       await this.dnsProvider.init();
@@ -66,7 +86,7 @@ class DNSManager {
   /**
    * Set up event subscriptions
    */
-  setupEventSubscriptions() {
+  setupEventSubscriptions(): void {
     // Subscribe to Traefik router updates
     this.eventBus.subscribe(EventTypes.TRAEFIK_ROUTERS_UPDATED, (data) => {
       const pass = this.dnsPass.run(data.hostnames, data.containerLabels);
@@ -82,7 +102,7 @@ class DNSManager {
    * @param {Array<string>} hostnames - List of hostnames to process
    * @param {Object} containerLabels - Map of container IDs to their labels
    */
-  async processHostnames(hostnames, containerLabels) {
+  async processHostnames(hostnames: string[], containerLabels: Record<string, LabelMap>): Promise<DnsPassResult> {
     try {
       logger.debug(`DNS Manager processing ${hostnames.length} hostnames`);
       
@@ -236,7 +256,7 @@ class DNSManager {
   /**
    * Reset statistics counters
    */
-  resetStats() {
+  resetStats(): void {
     this.stats = {
       created: 0,
       updated: 0,
@@ -249,14 +269,14 @@ class DNSManager {
   /**
    * Reset logged preserved records tracking
    */
-  resetLoggedPreservedRecords() {
+  resetLoggedPreservedRecords(): void {
     this.loggedPreservedRecords = new Set();
   }
   
   /**
    * Log statistics about processed DNS records
    */
-  logStats() {
+  logStats(): void {
     if (this.stats.total > 0) {
       if (this.stats.created > 0) {
         logger.success(`Created ${this.stats.created} new DNS records`);
@@ -300,7 +320,7 @@ class DNSManager {
   /**
    * Ensure a hostname is a fully qualified domain name
    */
-  ensureFqdn(hostname, zone) {
+  ensureFqdn(hostname: string, zone: string): string {
     if (hostname.includes('.')) {
       return hostname;
     }
@@ -310,7 +330,7 @@ class DNSManager {
   /**
    * Clean up orphaned DNS records
    */
-  async cleanupOrphanedRecords(activeHostnames) {
+  async cleanupOrphanedRecords(activeHostnames: string[]): Promise<void> {
     try {
       logger.debug('Checking for orphaned DNS records...');
       
@@ -430,7 +450,7 @@ class DNSManager {
             // Check if grace period has elapsed
             const orphanedTime = this.recordTracker.getRecordOrphanedTime(record);
             const now = new Date();
-            const elapsedMinutes = (now - orphanedTime) / (1000 * 60);
+            const elapsedMinutes = ((now as unknown as number) - (orphanedTime as unknown as number)) / (1000 * 60);
             
             if (elapsedMinutes >= this.config.cleanupGracePeriod) {
               // Grace period elapsed, we can delete the record
@@ -497,7 +517,7 @@ class DNSManager {
   /**
    * Process managed hostnames and ensure they exist
    */
-  async processManagedHostnames() {
+  async processManagedHostnames(): Promise<void> {
     if (!this.recordTracker.managedHostnames || this.recordTracker.managedHostnames.length === 0) {
       logger.debug('No managed hostnames to process');
       return;
@@ -512,10 +532,10 @@ class DNSManager {
     for (const config of this.recordTracker.managedHostnames) {
       try {
         // Create a record configuration
-        const recordConfig = {
+        const recordConfig: DnsRecordConfig = {
           type: config.type,
           name: config.hostname,
-          content: config.content,
+          content: config.content as string,
           ttl: config.ttl
         };
         

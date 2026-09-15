@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Main application entry point for TráfegoDNS
  * Primary responsibility: Wire up the application components
@@ -29,7 +28,7 @@ async function start() {
     const dockerMonitor = new DockerMonitor(config, eventBus);
     
     // Choose the appropriate monitor based on operation mode
-    let monitor;
+    let monitor: DirectDNSManager | TraefikMonitor;
     
     if (config.operationMode.toLowerCase() === 'direct') {
       logger.info('🚀 Starting in DIRECT mode (without Traefik)');

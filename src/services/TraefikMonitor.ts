@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Traefik Monitor Service
  * Responsible for monitoring Traefik routers and updating DNS records
@@ -10,13 +9,33 @@ import { extractHostnamesFromRule } from '../utils/traefik';
 import { getLabelValue } from '../utils/dns';
 import { SingleFlight } from '../utils/singleFlight';
 import { resolveHostnameLabels } from '../utils/routerAttribution';
+import type { AxiosInstance } from 'axios';
+import type ConfigManager from '../config/ConfigManager';
+import type { EventBus } from '../events/EventBus';
+import type DockerMonitor from './DockerMonitor';
+import type { ContainerSummary, LabelMap } from '../../types/docker';
+import type { AmbiguousRouter, FallbackRouter, OwnerConflict, PollTrigger, RouterRef, TraefikRouter } from '../../types/traefik';
 
 const ROUTERS_PER_PAGE = 100;
 const MAX_ROUTER_PAGES = 100;
 const LABELS_NOT_LOADED = 'Skipping DNS pass: Docker container labels have not been loaded yet';
 
 class TraefikMonitor {
-  constructor(config, eventBus) {
+  declare config: ConfigManager;
+  declare eventBus: EventBus;
+  declare client: AxiosInstance;
+  declare previousStats: { hostnameCount: number };
+  declare pollTimer: NodeJS.Timeout | null;
+  declare pollRunner: SingleFlight<[PollTrigger], void>;
+  declare lastContainers: ContainerSummary[];
+  declare labelsGateWarned: boolean;
+  declare warnedAmbiguousRouters: Set<string>;
+  declare warnedOwnerConflicts: Set<string>;
+  declare loggedFallbackRouters: Map<string, string>;
+  declare dockerMonitor: DockerMonitor | null;
+  declare lastMergedLabels: Record<string, LabelMap> | undefined;
+
+  constructor(config: ConfigManager, eventBus: EventBus) {
     this.config = config;
     this.eventBus = eventBus;
     
@@ -59,7 +78,7 @@ class TraefikMonitor {
   /**
    * Initialize the Traefik Monitor
    */
-  async init() {
+  async init(): Promise<boolean> {
     try {
       logger.debug('Testing connection to Traefik API...');
       
@@ -81,7 +100,7 @@ class TraefikMonitor {
   /**
    * Set up event subscriptions
    */
-  setupEventSubscriptions() {
+  setupEventSubscriptions(): void {
     // Subscribe to Docker label updates
     this.eventBus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => {
       this.lastContainers = data.containers || [];
@@ -97,7 +116,7 @@ class TraefikMonitor {
   /**
    * Start the polling process
    */
-  async startPolling() {
+  async startPolling(): Promise<boolean> {
     // Perform initial poll
     await this.requestPoll('startup');
     
@@ -111,7 +130,7 @@ class TraefikMonitor {
   /**
    * Stop the polling process
    */
-  stopPolling() {
+  stopPolling(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -122,7 +141,7 @@ class TraefikMonitor {
   /**
    * Test the connection to the Traefik API
    */
-  async testConnection() {
+  async testConnection(): Promise<boolean> {
     try {
       // Try to access the overview endpoint
       await this.client.get('/overview');
@@ -134,18 +153,18 @@ class TraefikMonitor {
   }
   
   // A request made during a running poll is served by one trailing poll.
-  requestPoll(trigger) {
+  requestPoll(trigger: PollTrigger): Promise<void> {
     return this.pollRunner.run(trigger);
   }
   
   /**
    * Poll the Traefik API for routers
    */
-  pollTraefikAPI(trigger = 'interval') {
+  pollTraefikAPI(trigger: PollTrigger = 'interval'): Promise<void> {
     return this.requestPoll(trigger);
   }
   
-  async runPoll(trigger) {
+  async runPoll(trigger: PollTrigger): Promise<void> {
     try {
       // Publish poll started event
       this.eventBus.publish(EventTypes.TRAEFIK_POLL_STARTED);
@@ -217,10 +236,10 @@ class TraefikMonitor {
   /**
    * Get all HTTP routers from Traefik
    */
-  async getRouters() {
+  async getRouters(): Promise<TraefikRouter[]> {
     try {
       let page = 1;
-      const routers = [];
+      const routers: TraefikRouter[] = [];
       for (let i = 0; i < MAX_ROUTER_PAGES; i++) {
         const response = await this.client.get('/http/routers', { params: { page, per_page: ROUTERS_PER_PAGE } });
         routers.push(...(Array.isArray(response.data) ? response.data : Object.values(response.data || {})));
@@ -250,9 +269,9 @@ class TraefikMonitor {
   /**
    * Process routers to extract unique hostnames and the routers serving each hostname
    */
-  processRouters(routers) {
+  processRouters(routers: TraefikRouter[] | Record<string, TraefikRouter>): { hostnames: string[]; hostnameRouters: Map<string, RouterRef[]> } {
     const hostnames = [];
-    const hostnameRouters = new Map();
+    const hostnameRouters = new Map<string, RouterRef[]>();
     const list = Array.isArray(routers) ? routers : Object.values(routers || {});
     
     for (const router of list) {
@@ -267,7 +286,7 @@ class TraefikMonitor {
             hostnames.push(hostname);
           }
           
-          const refs = hostnameRouters.get(hostname);
+          const refs = hostnameRouters.get(hostname)!;
           if (!refs.some((ref) => ref.name === routerName)) {
             refs.push({
               name: routerName,
@@ -285,8 +304,8 @@ class TraefikMonitor {
     return { hostnames, hostnameRouters };
   }
   
-  reportAttributionIssues(ambiguousRouters, ownerConflicts) {
-    const ambiguousNow = new Set();
+  reportAttributionIssues(ambiguousRouters: AmbiguousRouter[], ownerConflicts: OwnerConflict[]): void {
+    const ambiguousNow = new Set<string>();
     for (const { routerName, ownerNames } of ambiguousRouters) {
       ambiguousNow.add(routerName);
       if (!this.warnedAmbiguousRouters.has(routerName)) {
@@ -295,7 +314,7 @@ class TraefikMonitor {
     }
     this.warnedAmbiguousRouters = ambiguousNow;
     
-    const conflictsNow = new Set();
+    const conflictsNow = new Set<string>();
     for (const { hostname, ownerNames, chosen } of ownerConflicts) {
       conflictsNow.add(hostname);
       if (!this.warnedOwnerConflicts.has(hostname)) {
@@ -305,8 +324,8 @@ class TraefikMonitor {
     this.warnedOwnerConflicts = conflictsNow;
   }
 
-  reportFallbackRouters(fallbackRouters) {
-    const current = new Map();
+  reportFallbackRouters(fallbackRouters: FallbackRouter[]): void {
+    const current = new Map<string, string>();
     for (const { routerName, ownerName } of fallbackRouters) {
       current.set(routerName, ownerName);
       if (this.loggedFallbackRouters.get(routerName) !== ownerName) {
@@ -316,13 +335,13 @@ class TraefikMonitor {
     this.loggedFallbackRouters = current;
   }
   
-  logProxiedChanges(containerLabels, owners) {
+  logProxiedChanges(containerLabels: Record<string, LabelMap>, owners: Record<string, string | null>): void {
     const genericPrefix = this.config.genericLabelPrefix;
     const providerPrefix = this.config.dnsLabelPrefix;
     
     // For tracking changes in logging
     const firstPoll = !this.lastMergedLabels;
-    const labelChanges = {};
+    const labelChanges: Record<string, string> = {};
     
     for (const [hostname, labels] of Object.entries(containerLabels)) {
       const containerName = owners[hostname];
