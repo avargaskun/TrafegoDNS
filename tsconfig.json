@@ -5,8 +5,6 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "resolveJsonModule": true,
-    "allowJs": true,
-    "checkJs": false,
     "strict": true,
     "useUnknownInCatchVariables": false,
     "useDefineForClassFields": true,
