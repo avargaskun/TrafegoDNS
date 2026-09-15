@@ -1,30 +1,32 @@
-// @ts-nocheck
 /**
  * Cache utility functions for Route53 provider
  */
 import { ListResourceRecordSetsCommand } from '@aws-sdk/client-route-53';
 import logger from '../../utils/logger';
+import type { ListResourceRecordSetsCommandInput, RRType } from '@aws-sdk/client-route-53';
+import type Route53Provider from './provider';
+import type { Route53Record, Route53RecordSet } from '../../../types/providers';
 
 /**
  * Fetch all records from Route53, handling pagination
  */
-async function fetchAllRecords() {
-  let allRecords = [];
-  let isTruncated = true;
-  let nextRecordName = null;
-  let nextRecordType = null;
-  let nextRecordIdentifier = null;
+async function fetchAllRecords(this: Route53Provider): Promise<Route53Record[]> {
+  let allRecords: Route53Record[] = [];
+  let isTruncated: boolean | undefined = true;
+  let nextRecordName: string | null | undefined = null;
+  let nextRecordType: RRType | null | undefined = null;
+  let nextRecordIdentifier: string | null | undefined = null;
   
   while (isTruncated) {
     try {
-      const params = {
+      const params: ListResourceRecordSetsCommandInput = {
         HostedZoneId: this.zoneId
       };
       
       // Handle pagination
       if (nextRecordName) {
         params.StartRecordName = nextRecordName;
-        params.StartRecordType = nextRecordType;
+        params.StartRecordType = nextRecordType!;
         
         if (nextRecordIdentifier) {
           params.StartRecordIdentifier = nextRecordIdentifier;
@@ -35,7 +37,7 @@ async function fetchAllRecords() {
       const response = await this.route53.send(command);
       
       // Process and standardize records
-      const standardizedRecords = this.standardizeRecords(response.ResourceRecordSets);
+      const standardizedRecords = this.standardizeRecords(response.ResourceRecordSets as Route53RecordSet[]);
       allRecords = allRecords.concat(standardizedRecords);
       
       // Check if there are more records to fetch
@@ -59,7 +61,7 @@ async function fetchAllRecords() {
  * Find a record in the cache
  * Override to handle Route53's trailing dots in names
  */
-function findRecordInCache(type, name) {
+function findRecordInCache(this: Route53Provider, type: string, name: string): Route53Record | null {
   // Normalize the name (remove trailing dot if present)
   const normalizedName = name.endsWith('.') ? name.slice(0, -1) : name;
   
@@ -84,7 +86,7 @@ function findRecordInCache(type, name) {
 /**
  * Update a record in the cache
  */
-function updateRecordInCache(record) {
+function updateRecordInCache(this: Route53Provider, record: Route53Record): void {
   logger.trace(`Route53Provider.updateRecordInCache: Updating record in cache: name=${record.name}, type=${record.type}`);
   
   const index = this.recordCache.records.findIndex(
@@ -103,7 +105,7 @@ function updateRecordInCache(record) {
 /**
  * Remove a record from the cache
  */
-function removeRecordFromCache(name, type) {
+function removeRecordFromCache(this: Route53Provider, name: string, type: string): void {
   logger.trace(`Route53Provider.removeRecordFromCache: Removing record name=${name}, type=${type} from cache`);
   
   const initialLength = this.recordCache.records.length;

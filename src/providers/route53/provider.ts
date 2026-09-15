@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * AWS Route53 DNS Provider
  * Core implementation of the DNSProvider interface for AWS Route53
@@ -29,9 +28,24 @@ import {
   deleteRecord,
   batchEnsureRecords
 } from './operationUtils';
+import type { ListResourceRecordSetsCommandInput, RRType } from '@aws-sdk/client-route-53';
+import type ConfigManager from '../../config/ConfigManager';
+import type { DnsRecord, ListRecordsParams } from '../../../types/dns';
+import type { Route53Record, Route53RecordSet } from '../../../types/providers';
 
 class Route53Provider extends DNSProvider {
-  constructor(config) {
+  declare accessKey: string;
+  declare secretKey: string;
+  declare zone: string;
+  declare zoneId: string;
+  declare route53: Route53Client;
+  declare recordCache: { records: Route53Record[]; lastUpdated: number };
+  declare standardizeRecords: OmitThisParameter<typeof standardizeRecords>;
+  declare fetchAllRecords: OmitThisParameter<typeof fetchAllRecords>;
+  declare updateRecordInCache: OmitThisParameter<typeof updateRecordInCache>;
+  declare removeRecordFromCache: OmitThisParameter<typeof removeRecordFromCache>;
+
+  constructor(config: ConfigManager) {
     super(config);
     
     logger.trace('Route53Provider.constructor: Initialising with config');
@@ -69,7 +83,7 @@ class Route53Provider extends DNSProvider {
   /**
    * Initialize API by fetching hosted zone ID if not provided
    */
-  async init() {
+  async init(): Promise<boolean> {
     logger.trace(`Route53Provider.init: Starting initialization for zone "${this.zone}"`);
     
     try {
@@ -85,10 +99,10 @@ class Route53Provider extends DNSProvider {
         });
         
         const response = await this.route53.send(command);
-        logger.trace(`Route53Provider.init: Received ${response.HostedZones.length} zones from API`);
+        logger.trace(`Route53Provider.init: Received ${response.HostedZones!.length} zones from API`);
         
         // Find the exact matching zone
-        const matchingZone = response.HostedZones.find(
+        const matchingZone = response.HostedZones!.find(
           zone => zone.Name === zoneName
         );
         
@@ -98,7 +112,7 @@ class Route53Provider extends DNSProvider {
         }
         
         // Extract the zoneId (removing the /hostedzone/ prefix)
-        this.zoneId = matchingZone.Id.replace(/^\/hostedzone\//, '');
+        this.zoneId = matchingZone.Id!.replace(/^\/hostedzone\//, '');
         logger.debug(`Route53 zoneId for ${this.zone}: ${this.zoneId}`);
       }
       
@@ -119,7 +133,7 @@ class Route53Provider extends DNSProvider {
   /**
    * Refresh the DNS record cache
    */
-  async refreshRecordCache() {
+  async refreshRecordCache(): Promise<Route53Record[] | undefined> {
     logger.trace('Route53Provider.refreshRecordCache: Starting cache refresh');
     
     try {
@@ -147,7 +161,7 @@ class Route53Provider extends DNSProvider {
       if (logger.level >= 4) { // TRACE level
         logger.trace('Route53Provider.refreshRecordCache: Current cache contents:');
         this.recordCache.records.forEach((record, index) => {
-          logger.trace(`Record[${index}]: type=${record.type}, name=${record.name}, value=${record.value}`);
+          logger.trace(`Record[${index}]: type=${record.type}, name=${record.name}, value=${(record as Route53Record & { value?: unknown }).value}`);
         });
       }
       
@@ -162,7 +176,7 @@ class Route53Provider extends DNSProvider {
   /**
    * List DNS records with optional filtering
    */
-  async listRecords(params = {}) {
+  async listRecords(params: ListRecordsParams = {}): Promise<DnsRecord[]> {
     logger.trace(`Route53Provider.listRecords: Listing records with params: ${JSON.stringify(params)}`);
     
     try {
@@ -181,13 +195,13 @@ class Route53Provider extends DNSProvider {
         }
         
         // Build Route53 params
-        const route53Params = {
+        const route53Params: ListResourceRecordSetsCommandInput = {
           HostedZoneId: this.zoneId
         };
         
         // Add type filter if specified
         if (params.type) {
-          route53Params.StartRecordType = params.type;
+          route53Params.StartRecordType = params.type as RRType;
         }
         
         // Add name filter if specified - Route53 requires trailing dot
@@ -199,7 +213,7 @@ class Route53Provider extends DNSProvider {
         // Fetch records from Route53
         const command = new ListResourceRecordSetsCommand(route53Params);
         const response = await this.route53.send(command);
-        const allRecords = this.standardizeRecords(response.ResourceRecordSets);
+        const allRecords = this.standardizeRecords(response.ResourceRecordSets as Route53RecordSet[]);
         
         // Apply filters manually since Route53 API has limited filtering
         const filteredRecords = allRecords.filter(record => {

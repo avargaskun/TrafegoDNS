@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Route53 Provider module
  * Exports the Route53 DNS provider implementation

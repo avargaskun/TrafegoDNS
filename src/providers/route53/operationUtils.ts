@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Operation utility functions for Route53 provider
  */
@@ -6,13 +5,23 @@ import { ChangeResourceRecordSetsCommand } from '@aws-sdk/client-route-53';
 import logger from '../../utils/logger';
 import { convertToRoute53Format } from './converter';
 import { validateRecord } from './validator';
+import type { Change, ChangeResourceRecordSetsCommandInput } from '@aws-sdk/client-route-53';
+import type Route53Provider from './provider';
+import type { DnsRecord, DnsRecordConfig } from '../../../types/dns';
+import type { Route53Record } from '../../../types/providers';
+
+interface PendingChanges {
+  create: { record: DnsRecordConfig }[];
+  update: { id: DnsRecord['id']; record: DnsRecordConfig; existing: DnsRecord }[];
+  unchanged: { record: DnsRecordConfig; existing: DnsRecord }[];
+}
 
 /**
  * Analyse a Route53 batch operation error and categorize it
  * @param {Error} error - The error object from AWS API
  * @returns {Object} - Categorized error information with affected records
  */
-function analyzeBatchError(error) {
+function analyzeBatchError(error: any) {
   // Default error category
   let category = 'UNKNOWN_ERROR';
   let message = error.message;
@@ -71,7 +80,7 @@ function analyzeBatchError(error) {
 /**
  * Create a new DNS record
  */
-async function createRecord(record) {
+async function createRecord(this: Route53Provider, record: DnsRecordConfig): Promise<DnsRecord> {
   logger.trace(`Route53Provider.createRecord: Creating record type=${record.type}, name=${record.name}, content=${record.content}`);
   
   try {
@@ -88,7 +97,7 @@ async function createRecord(record) {
     const changeData = convertToRoute53Format(record, this.zone);
     
     // Create the change batch
-    const params = {
+    const params: ChangeResourceRecordSetsCommandInput = {
       HostedZoneId: this.zoneId,
       ChangeBatch: {
         Comment: 'Created by TráfegoDNS',
@@ -108,7 +117,7 @@ async function createRecord(record) {
     await this.route53.send(command);
     
     // Create a standardized record for caching
-    const createdRecord = {
+    const createdRecord: Route53Record = {
       id: `${record.name}:${record.type}`,
       type: record.type,
       name: record.name,
@@ -169,7 +178,7 @@ async function createRecord(record) {
  * Update an existing DNS record
  * Note: Route53 doesn't have a direct update method, we have to delete and create
  */
-async function updateRecord(id, record) {
+async function updateRecord(this: Route53Provider, id: string, record: DnsRecordConfig): Promise<Route53Record> {
   logger.trace(`Route53Provider.updateRecord: Updating record ID=${id}, type=${record.type}, name=${record.name}, content=${record.content}`);
   
   try {
@@ -206,7 +215,7 @@ async function updateRecord(id, record) {
     const newRecord = convertToRoute53Format(record, this.zone);
     
     // Create the change batch for deleting old and creating new
-    const params = {
+    const params: ChangeResourceRecordSetsCommandInput = {
       HostedZoneId: this.zoneId,
       ChangeBatch: {
         Comment: 'Updated by TráfegoDNS',
@@ -230,7 +239,7 @@ async function updateRecord(id, record) {
     await this.route53.send(command);
     
     // Create a standardized record for caching
-    const updatedRecord = {
+    const updatedRecord: Route53Record = {
       id: `${record.name}:${record.type}`,
       type: record.type,
       name: record.name,
@@ -274,7 +283,7 @@ async function updateRecord(id, record) {
 /**
  * Delete a DNS record
  */
-async function deleteRecord(id) {
+async function deleteRecord(this: Route53Provider, id: string): Promise<boolean> {
   logger.trace(`Route53Provider.deleteRecord: Deleting record ID=${id}`);
   
   try {
@@ -317,7 +326,7 @@ async function deleteRecord(id) {
     const route53Record = convertToRoute53Format(existing, this.zone);
     
     // Create the change batch
-    const params = {
+    const params: ChangeResourceRecordSetsCommandInput = {
       HostedZoneId: this.zoneId,
       ChangeBatch: {
         Comment: 'Deleted by TráfegoDNS',
@@ -354,7 +363,7 @@ async function deleteRecord(id) {
  * Batch process multiple DNS records at once
  * Route53 supports batching changes in a single API call, which is more efficient
  */
-async function batchEnsureRecords(recordConfigs) {
+async function batchEnsureRecords(this: Route53Provider, recordConfigs: DnsRecordConfig[]): Promise<DnsRecord[]> {
     if (!recordConfigs || recordConfigs.length === 0) {
       logger.trace('Route53Provider.batchEnsureRecords: No record configs provided, skipping');
       return [];
@@ -368,8 +377,8 @@ async function batchEnsureRecords(recordConfigs) {
       await this.getRecordsFromCache();
       
       // Process each record configuration
-      const results = [];
-      const pendingChanges = {
+      const results: DnsRecord[] = [];
+      const pendingChanges: PendingChanges = {
         create: [],
         update: [],
         unchanged: []
@@ -487,7 +496,7 @@ async function batchEnsureRecords(recordConfigs) {
       // Process creates and updates in batches
       if (pendingChanges.create.length > 0 || pendingChanges.update.length > 0) {
         // Combine all creates and updates into a single array of changes
-        const allChanges = [];
+        const allChanges: Change[] = [];
         
         // Add creates
         for (const { record } of pendingChanges.create) {
@@ -572,7 +581,7 @@ async function batchEnsureRecords(recordConfigs) {
       }
   
       // Track which records we've successfully processed to avoid duplicates
-      const processedRecords = new Map();
+      const processedRecords = new Map<string, boolean>();
       
       // If batch processing succeeded, we're done
       if (batchSucceeded) {
