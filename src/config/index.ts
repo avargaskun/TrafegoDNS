@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Configuration module index
  * Exports all configuration components

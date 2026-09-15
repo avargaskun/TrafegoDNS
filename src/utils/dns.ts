@@ -1,9 +1,11 @@
-// @ts-nocheck
 /**
  * DNS-related utility functions
  */
 import logger from './logger';
 import { LOG_LEVELS } from './logger';
+import type ConfigManager from '../config/ConfigManager';
+import type { LabelMap } from '../../types/docker';
+import type { DnsRecordConfig } from '../../types/dns';
 
 /**
  * Check if a hostname is an apex/root domain
@@ -11,7 +13,7 @@ import { LOG_LEVELS } from './logger';
  * @param {string} zone - The zone name
  * @returns {boolean} - True if the hostname is an apex domain
  */
-function isApexDomain(hostname, zone) {
+function isApexDomain(hostname: string, zone: string): boolean {
   logger.trace(`dns.isApexDomain: Checking if ${hostname} is apex domain for zone ${zone}`);
   
   // Remove trailing dot if present
@@ -32,7 +34,7 @@ function isApexDomain(hostname, zone) {
  * @param {string} hostname - The hostname to check
  * @returns {boolean} - True if the hostname is an IPv4 address
  */
-function isIPv4Address(hostname) {
+function isIPv4Address(hostname: string): boolean {
   logger.trace(`dns.isIPv4Address: Checking if ${hostname} is an IPv4 address`);
 
   const ipv4Regex = /^(25[0-5]|2[0-4]\d|[01]?\d?\d)(\.(25[0-5]|2[0-4]\d|[01]?\d?\d)){3}$/;
@@ -48,7 +50,7 @@ function isIPv4Address(hostname) {
  * @param {string} hostname - The hostname to check
  * @returns {boolean} - True if the hostname is an IPv6 address
  */
-function isIPv6Address(hostname) {
+function isIPv6Address(hostname: string): boolean {
   logger.trace(`dns.isIPv6Address: Checking if ${hostname} is an IPv6 address`);
 
   const ipv6Regex = /^(?:(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}|(?:[A-Fa-f0-9]{1,4}:){1,7}:|(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}|(?:[A-Fa-f0-9]{1,4}:){1,5}(?::[A-Fa-f0-9]{1,4}){1,2}|(?:[A-Fa-f0-9]{1,4}:){1,4}(?::[A-Fa-f0-9]{1,4}){1,3}|(?:[A-Fa-f0-9]{1,4}:){1,3}(?::[A-Fa-f0-9]{1,4}){1,4}|(?:[A-Fa-f0-9]{1,4}:){1,2}(?::[A-Fa-f0-9]{1,4}){1,5}|[A-Fa-f0-9]{1,4}:(?:(?::[A-Fa-f0-9]{1,4}){1,6})|:(?:(?::[A-Fa-f0-9]{1,4}){1,7}|:))$/;
@@ -68,7 +70,7 @@ function isIPv6Address(hostname) {
  * @param {*} defaultValue - Default value if label not found
  * @returns {*} - Label value
  */
-function getLabelValue(labels, genericPrefix, providerPrefix, key, defaultValue) {
+function getLabelValue<D>(labels: LabelMap, genericPrefix: string, providerPrefix: string, key: string, defaultValue: D): string | D {
   // First check provider-specific label
   if (labels[`${providerPrefix}${key}`] !== undefined) {
     return labels[`${providerPrefix}${key}`];
@@ -83,8 +85,8 @@ function getLabelValue(labels, genericPrefix, providerPrefix, key, defaultValue)
   return defaultValue;
 }
 
-function extractDnsLabels(labels, genericPrefix, providerPrefix) {
-  const dnsLabels = {};
+function extractDnsLabels(labels: LabelMap | null | undefined, genericPrefix: string, providerPrefix: string): LabelMap {
+  const dnsLabels: LabelMap = {};
   const entries = Object.entries(labels || {});
   for (const [key, value] of entries) {
     if (key.startsWith(providerPrefix)) {
@@ -104,7 +106,7 @@ function extractDnsLabels(labels, genericPrefix, providerPrefix) {
  * @param {string} provider - The DNS provider name
  * @returns {number} - The minimum TTL value in seconds
  */
-function getMinimumTTL(provider) {
+function getMinimumTTL(provider: string): number {
   switch (provider.toLowerCase()) {
     case 'cloudflare':
       return 1;  // Cloudflare supports TTL as low as 1 second (Auto)
@@ -120,7 +122,7 @@ function getMinimumTTL(provider) {
 /**
  * Extract DNS configuration from container labels
  */
-function extractDnsConfigFromLabels(labels, config, hostname) {
+function extractDnsConfigFromLabels(labels: LabelMap, config: ConfigManager, hostname: string): DnsRecordConfig {
   logger.trace(`dns.extractDnsConfigFromLabels: Extracting DNS config for ${hostname}`);
   logger.trace(`dns.extractDnsConfigFromLabels: Label count: ${Object.keys(labels).length}`);
   
@@ -150,10 +152,10 @@ function extractDnsConfigFromLabels(labels, config, hostname) {
   logger.trace(`dns.extractDnsConfigFromLabels: Using defaults for type ${recordType}: ${JSON.stringify(defaults)}`);
   
   // Build basic record config
-  const recordConfig = {
+  const recordConfig: DnsRecordConfig = {
     type: recordType,
     name: hostname,
-    ttl: parseInt(getLabelValue(labels, genericPrefix, providerPrefix, 'ttl', defaults.ttl), 10)
+    ttl: parseInt(getLabelValue(labels, genericPrefix, providerPrefix, 'ttl', defaults.ttl) as string, 10)
   };
   
   // Handle content based on record type and apex status
@@ -262,7 +264,7 @@ function extractDnsConfigFromLabels(labels, config, hostname) {
   switch (recordConfig.type) {
     case 'MX':
       recordConfig.priority = parseInt(
-        getLabelValue(labels, genericPrefix, providerPrefix, 'priority', defaults.priority), 
+        getLabelValue(labels, genericPrefix, providerPrefix, 'priority', defaults.priority) as string, 
         10
       );
       logger.trace(`dns.extractDnsConfigFromLabels: MX priority set to ${recordConfig.priority}`);
@@ -270,15 +272,15 @@ function extractDnsConfigFromLabels(labels, config, hostname) {
       
     case 'SRV':
       recordConfig.priority = parseInt(
-        getLabelValue(labels, genericPrefix, providerPrefix, 'priority', defaults.priority), 
+        getLabelValue(labels, genericPrefix, providerPrefix, 'priority', defaults.priority) as string, 
         10
       );
       recordConfig.weight = parseInt(
-        getLabelValue(labels, genericPrefix, providerPrefix, 'weight', defaults.weight), 
+        getLabelValue(labels, genericPrefix, providerPrefix, 'weight', defaults.weight) as string, 
         10
       );
       recordConfig.port = parseInt(
-        getLabelValue(labels, genericPrefix, providerPrefix, 'port', defaults.port), 
+        getLabelValue(labels, genericPrefix, providerPrefix, 'port', defaults.port) as string, 
         10
       );
       logger.trace(`dns.extractDnsConfigFromLabels: SRV fields - priority: ${recordConfig.priority}, weight: ${recordConfig.weight}, port: ${recordConfig.port}`);
@@ -286,7 +288,7 @@ function extractDnsConfigFromLabels(labels, config, hostname) {
       
     case 'CAA':
       recordConfig.flags = parseInt(
-        getLabelValue(labels, genericPrefix, providerPrefix, 'flags', defaults.flags), 
+        getLabelValue(labels, genericPrefix, providerPrefix, 'flags', defaults.flags) as string, 
         10
       );
       recordConfig.tag = getLabelValue(labels, genericPrefix, providerPrefix, 'tag', defaults.tag);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Environment variable loader
  * Handles loading and validating environment variables
@@ -11,7 +10,9 @@ class EnvironmentLoader {
      * @param {Function} converter - Converter function
      * @returns {*} The environment variable value
      */
-    static get(name, defaultValue, converter = null) {
+    static get<D>(name: string, defaultValue: D): string | D;
+    static get<D, R>(name: string, defaultValue: D, converter: (value: string) => R): R | D;
+    static get(name: string, defaultValue: unknown, converter: ((value: string) => unknown) | null = null) {
       const value = process.env[name];
       
       if (value === undefined) {
@@ -32,7 +33,7 @@ class EnvironmentLoader {
     /**
      * Get environment variable as string
      */
-    static getString(name, defaultValue = '') {
+    static getString(name: string, defaultValue: string = ''): string {
       return this.get(name, defaultValue);
     }
     
@@ -43,13 +44,13 @@ class EnvironmentLoader {
      * @param {string} defaultValue - Default value if not set
      * @returns {string} The secret value or default value
      */
-    static getSecret(name, defaultValue = '') {
+    static getSecret(name: string, defaultValue: string = ''): string {
       const fileVarName = `${name}_FILE`;
       const filePath = process.env[fileVarName];
 
       if (filePath) {
         try {
-          const fs = require('fs');
+          const fs: typeof import('fs') = require('fs');
           if (fs.existsSync(filePath)) {
             return fs.readFileSync(filePath, 'utf8').trim();
           } else {
@@ -66,7 +67,7 @@ class EnvironmentLoader {
     /**
      * Get environment variable as integer
      */
-    static getInt(name, defaultValue = 0) {
+    static getInt(name: string, defaultValue: number = 0): number {
       return this.get(name, defaultValue, (value) => {
         const parsed = parseInt(value, 10);
         if (isNaN(parsed)) {
@@ -79,7 +80,7 @@ class EnvironmentLoader {
     /**
      * Get environment variable as boolean
      */
-    static getBool(name, defaultValue = false) {
+    static getBool(name: string, defaultValue: boolean = false): boolean {
       return this.get(name, defaultValue, (value) => {
         return value !== 'false';
       });
@@ -89,7 +90,7 @@ class EnvironmentLoader {
      * Get required environment variable
      * @throws {Error} If the variable is not set
      */
-    static getRequired(name) {
+    static getRequired(name: string): string {
       const value = process.env[name];
       
       if (value === undefined) {

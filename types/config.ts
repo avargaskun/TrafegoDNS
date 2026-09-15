@@ -1,8 +1,6 @@
-export interface LabelPrefixes {
-  genericLabelPrefix: string;
-  dnsLabelPrefix: string;
-  traefikLabelPrefix: string;
-}
+import type ConfigManager from '../src/config/ConfigManager';
+
+export type LabelPrefixes = Pick<ConfigManager, 'genericLabelPrefix' | 'dnsLabelPrefix' | 'traefikLabelPrefix'>;
 
 export interface RecordTypeDefaults {
   content: string;

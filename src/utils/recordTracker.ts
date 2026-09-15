@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DNS Record Tracker
  * Tracks which DNS records have been created/managed by this tool
@@ -7,9 +6,20 @@
 import fs from 'fs';
 import path from 'path';
 import logger from './logger';
+import type ConfigManager from '../config/ConfigManager';
+import type { DnsRecord, ManagedHostname, TrackedRecord } from '../../types/dns';
 
 class RecordTracker {
-  constructor(config, dataDir = path.join('/config', 'data')) {
+  declare config: ConfigManager;
+  declare trackedRecords: Map<string, TrackedRecord>;
+  declare trackerFile: string;
+  declare legacyTrackerFile: string;
+  declare providerDomain: string;
+  declare provider: string;
+  declare preservedHostnames: string[];
+  declare managedHostnames: ManagedHostname[];
+
+  constructor(config: ConfigManager, dataDir: string = path.join('/config', 'data')) {
     this.config = config;
     this.trackedRecords = new Map();
     
@@ -45,7 +55,7 @@ class RecordTracker {
   /**
    * Load preserved hostnames from environment variable
    */
-  loadPreservedHostnames() {
+  loadPreservedHostnames(): void {
     try {
       const preservedHostnamesStr = process.env.PRESERVED_HOSTNAMES || '';
       
@@ -69,7 +79,7 @@ class RecordTracker {
   /**
    * Load tracked records from file
    */
-  loadTrackedRecords() {
+  loadTrackedRecords(): void {
     // Start with an empty map
     this.trackedRecords = new Map();
     
@@ -128,7 +138,7 @@ class RecordTracker {
   /**
    * Save tracked records to file
    */
-  saveTrackedRecords() {
+  saveTrackedRecords(): void {
     try {
       const records = Array.from(this.trackedRecords.values());
       fs.writeFileSync(this.trackerFile, JSON.stringify(records, null, 2), 'utf8');
@@ -141,14 +151,14 @@ class RecordTracker {
   /**
    * Create a unique key for a record
    */
-  getRecordKey(provider, domain, name, type) {
+  getRecordKey(provider: string, domain: string, name: string, type: string): string {
     return `${provider}:${domain}:${name}:${type}`.toLowerCase();
   }
   
   /**
    * Track a new DNS record
    */
-  trackRecord(record) {
+  trackRecord(record: DnsRecord): void {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -175,7 +185,7 @@ class RecordTracker {
   /**
    * Remove a tracked record
    */
-  untrackRecord(record) {
+  untrackRecord(record: DnsRecord): boolean {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -197,7 +207,7 @@ class RecordTracker {
   /**
    * Check if a record is tracked
    */
-  isTracked(record) {
+  isTracked(record: DnsRecord): boolean {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -211,15 +221,15 @@ class RecordTracker {
   /**
    * Get all tracked records
    */
-  getAllTrackedRecords() {
+  getAllTrackedRecords(): TrackedRecord[] {
     return Array.from(this.trackedRecords.values());
   }
   
   /**
    * Get tracked records for current provider and domain
    */
-  getCurrentProviderRecords() {
-    const records = [];
+  getCurrentProviderRecords(): TrackedRecord[] {
+    const records: TrackedRecord[] = [];
     
     for (const [key, record] of this.trackedRecords.entries()) {
       if (record.provider === this.provider && record.domain === this.providerDomain) {
@@ -235,7 +245,7 @@ class RecordTracker {
    * @param {string} hostname - The hostname to check
    * @returns {boolean} - True if the hostname should be preserved
    */
-  shouldPreserveHostname(hostname) {
+  shouldPreserveHostname(hostname: string): boolean {
     // Normalize hostname for comparison (trim, lowercase)
     const normalizedHostname = hostname.trim().toLowerCase();
     
@@ -263,7 +273,7 @@ class RecordTracker {
   /**
    * Update a record ID (when a record is updated/recreated)
    */
-  updateRecordId(oldRecord, newRecord) {
+  updateRecordId(oldRecord: DnsRecord, newRecord: DnsRecord): void {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -272,7 +282,7 @@ class RecordTracker {
     );
     
     if (this.trackedRecords.has(key)) {
-      const record = this.trackedRecords.get(key);
+      const record = this.trackedRecords.get(key)!;
       record.id = newRecord.id;
       record.updatedAt = new Date().toISOString();
       this.trackedRecords.set(key, record);
@@ -286,7 +296,7 @@ class RecordTracker {
    * @param {Object} record - The record to mark
    * @returns {boolean} - True if the record was successfully marked
    */
-  markRecordOrphaned(record) {
+  markRecordOrphaned(record: DnsRecord): boolean {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -295,7 +305,7 @@ class RecordTracker {
     );
     
     if (this.trackedRecords.has(key)) {
-      const trackedRecord = this.trackedRecords.get(key);
+      const trackedRecord = this.trackedRecords.get(key)!;
       trackedRecord.orphanedAt = new Date().toISOString();
       this.trackedRecords.set(key, trackedRecord);
       this.saveTrackedRecords();
@@ -311,7 +321,7 @@ class RecordTracker {
    * @param {Object} record - The record to unmark
    * @returns {boolean} - True if the record was successfully unmarked
    */
-  unmarkRecordOrphaned(record) {
+  unmarkRecordOrphaned(record: DnsRecord): boolean {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -320,7 +330,7 @@ class RecordTracker {
     );
     
     if (this.trackedRecords.has(key)) {
-      const trackedRecord = this.trackedRecords.get(key);
+      const trackedRecord = this.trackedRecords.get(key)!;
       if (trackedRecord.orphanedAt) {
         delete trackedRecord.orphanedAt;
         this.trackedRecords.set(key, trackedRecord);
@@ -338,7 +348,7 @@ class RecordTracker {
    * @param {Object} record - The record to check
    * @returns {boolean} - True if the record is marked as orphaned
    */
-  isRecordOrphaned(record) {
+  isRecordOrphaned(record: DnsRecord): boolean {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -347,7 +357,7 @@ class RecordTracker {
     );
     
     if (this.trackedRecords.has(key)) {
-      return !!this.trackedRecords.get(key).orphanedAt;
+      return !!this.trackedRecords.get(key)!.orphanedAt;
     }
     
     return false;
@@ -358,7 +368,7 @@ class RecordTracker {
    * @param {Object} record - The record to check
    * @returns {Date|null} - Date object when the record was orphaned, or null if not orphaned
    */
-  getRecordOrphanedTime(record) {
+  getRecordOrphanedTime(record: DnsRecord): Date | null {
     const key = this.getRecordKey(
       this.provider,
       this.providerDomain,
@@ -367,7 +377,7 @@ class RecordTracker {
     );
     
     if (this.trackedRecords.has(key)) {
-      const orphanedAt = this.trackedRecords.get(key).orphanedAt;
+      const orphanedAt = this.trackedRecords.get(key)!.orphanedAt;
       if (orphanedAt) {
         return new Date(orphanedAt);
       }
@@ -379,7 +389,7 @@ class RecordTracker {
   /**
    * Load managed hostnames from environment variable
    */
-  loadManagedHostnames() {
+  loadManagedHostnames(): void {
     try {
       const managedHostnamesStr = this.config.managedHostnames || '';
       
@@ -401,7 +411,7 @@ class RecordTracker {
             proxied: parts[4] ? parts[4].toLowerCase() === 'true' : this.config.defaultProxied
           };
         })
-        .filter(config => config && config.hostname && config.hostname.length > 0);
+        .filter(config => config && config.hostname && config.hostname.length > 0) as ManagedHostname[];
       
       if (this.managedHostnames.length === 0) {
         logger.debug('No managed hostnames configured');

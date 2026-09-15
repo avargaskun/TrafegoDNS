@@ -1,15 +1,49 @@
-// @ts-nocheck
 /**
  * Configuration management for Traefik DNS Manager 
  */
 import axios from 'axios';
 import logger from '../utils/logger';
 import EnvironmentLoader from './EnvironmentLoader';
+import type { IpCache, RecordTypeDefaults } from '../../types/config';
 
 // Semaphore for IP update process
-let ipUpdateInProgress = false;
+let ipUpdateInProgress: boolean = false;
 
 class ConfigManager {
+  declare ipCache: IpCache;
+  declare operationMode: string;
+  declare managedHostnames: string;
+  declare dnsProvider: string;
+  declare cloudflareToken: string;
+  declare cloudflareZone: string;
+  declare route53AccessKey: string;
+  declare route53SecretKey: string;
+  declare route53Zone: string;
+  declare route53ZoneId: string;
+  declare route53Region: string;
+  declare digitalOceanToken: string;
+  declare digitalOceanDomain: string;
+  declare traefikApiUrl: string;
+  declare traefikApiUsername: string;
+  declare traefikApiPassword: string;
+  declare genericLabelPrefix: string;
+  declare dnsLabelPrefix: string;
+  declare traefikLabelPrefix: string;
+  declare defaultRecordType: string;
+  declare defaultContent: string;
+  declare defaultProxied: boolean;
+  declare defaultTTL: number;
+  declare defaultManage: boolean;
+  declare recordDefaults: Record<string, RecordTypeDefaults>;
+  declare dockerSocket: string;
+  declare pollInterval: number;
+  declare watchDockerEvents: boolean;
+  declare cleanupOrphaned: boolean;
+  declare cleanupGracePeriod: number;
+  declare cacheRefreshInterval: number;
+  declare apiTimeout: number;
+  declare ipRefreshInterval: number;
+
   constructor() {
     // Initialize IP cache first to avoid reference errors
     this.ipCache = {
@@ -158,7 +192,7 @@ class ConfigManager {
   /**
    * Validate that required config is present for the selected provider
    */
-  validateProviderConfig() {
+  validateProviderConfig(): void {
     switch (this.dnsProvider.toLowerCase()) {
       case 'cloudflare':
         if (!this.cloudflareToken) {
@@ -200,7 +234,7 @@ class ConfigManager {
   /**
    * Get the main domain for the current provider
    */
-  getProviderDomain() {
+  getProviderDomain(): string {
     switch (this.dnsProvider.toLowerCase()) {
       case 'cloudflare':
         return this.cloudflareZone;
@@ -216,7 +250,7 @@ class ConfigManager {
   /**
    * Get defaults for a specific record type
    */
-  getDefaultsForType(type) {
+  getDefaultsForType(type: string): RecordTypeDefaults {
     return this.recordDefaults[type] || {
       content: this.defaultContent,
       proxied: this.defaultProxied,
@@ -228,7 +262,7 @@ class ConfigManager {
    * Get public IPv4 address synchronously (from cache)
    * If cache is empty, will return null and trigger async update
    */
-  getPublicIPSync() {
+  getPublicIPSync(): string | null {
     if (!this.ipCache.ipv4) {
       // If we don't have a cached IP, trigger an async update
       // This won't block the current execution, but will update for next time
@@ -240,7 +274,7 @@ class ConfigManager {
   /**
    * Get public IPv6 address synchronously (from cache)
    */
-  getPublicIPv6Sync() {
+  getPublicIPv6Sync(): string | null {
     if (!this.ipCache.ipv6) {
       this.updatePublicIPs();
     }
@@ -251,7 +285,7 @@ class ConfigManager {
    * Get public IP address asynchronously
    * Returns a promise that resolves to the public IP
    */
-  async getPublicIP() {
+  async getPublicIP(): Promise<string | null | undefined> {
     // Check if cache is fresh (less than 1 hour old)
     const cacheAge = Date.now() - this.ipCache.lastCheck;
     if (this.ipCache.ipv4 && cacheAge < this.ipRefreshInterval) {
@@ -267,11 +301,11 @@ class ConfigManager {
    * Update the public IP cache by calling external IP services
    * Uses a semaphore to prevent concurrent updates
    */
-  async updatePublicIPs() {
+  async updatePublicIPs(): Promise<IpCache> {
     // If an update is already in progress, wait for it to complete
     if (ipUpdateInProgress) {
       logger.debug('IP update already in progress, waiting...');
-      await new Promise(resolve => {
+      await new Promise<void>(resolve => {
         const checkInterval = setInterval(() => {
           if (!ipUpdateInProgress) {
             clearInterval(checkInterval);
