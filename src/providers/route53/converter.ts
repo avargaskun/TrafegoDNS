@@ -1,9 +1,11 @@
-// @ts-nocheck
 /**
  * Route53 record format converter utilities
  * Handles conversion between internal format and AWS Route53 API format
  */
 import logger from '../../utils/logger';
+import type { RRType } from '@aws-sdk/client-route-53';
+import type { DnsRecord, DnsRecordConfig } from '../../../types/dns';
+import type { Route53Record, Route53RecordPayload, Route53RecordSet } from '../../../types/providers';
 
 /**
  * Convert standard record format to Route53 API format
@@ -11,16 +13,16 @@ import logger from '../../utils/logger';
  * @param {string} zone - The zone name
  * @returns {Object} - Record in Route53 format
  */
-function convertToRoute53Format(record, zone) {
+function convertToRoute53Format(record: DnsRecordConfig | DnsRecord, zone: string): Route53RecordPayload {
   logger.trace(`route53.converter: Converting record to Route53 format: ${JSON.stringify(record)}`);
   
   // Ensure zone has trailing dot
   const zoneName = zone.endsWith('.') ? zone : `${zone}.`;
   
   // Basic record format for Route53
-  const route53Record = {
+  const route53Record: Route53RecordPayload = {
     Name: ensureTrailingDot(record.name, zoneName),
-    Type: record.type,
+    Type: record.type as RRType,
     TTL: record.ttl || 300,
     ResourceRecords: []
   };
@@ -39,19 +41,19 @@ function convertToRoute53Format(record, zone) {
     case 'CNAME':
       // Route53 requires CNAME values to end with a dot
       route53Record.ResourceRecords.push({
-        Value: ensureTrailingDot(record.content)
+        Value: ensureTrailingDot(record.content!)
       });
       break;
       
     case 'MX':
       route53Record.ResourceRecords.push({
-        Value: `${record.priority || 10} ${ensureTrailingDot(record.content)}`
+        Value: `${record.priority || 10} ${ensureTrailingDot(record.content!)}`
       });
       break;
       
     case 'SRV':
       route53Record.ResourceRecords.push({
-        Value: `${record.priority || 10} ${record.weight || 10} ${record.port || 80} ${ensureTrailingDot(record.content)}`
+        Value: `${record.priority || 10} ${record.weight || 10} ${record.port || 80} ${ensureTrailingDot(record.content!)}`
       });
       break;
       
@@ -79,11 +81,11 @@ function convertToRoute53Format(record, zone) {
  * @param {Object} route53Record - Record in Route53 format
  * @returns {Object} - Record in standard format
  */
-function convertRecord(route53Record) {
+function convertRecord(route53Record: Route53RecordSet): Route53Record {
   logger.trace(`route53.converter: Converting from Route53 format: ${JSON.stringify(route53Record)}`);
   
   // Basic record format
-  const standardRecord = {
+  const standardRecord: Route53Record = {
     id: `${route53Record.Name}:${route53Record.Type}`,
     type: route53Record.Type,
     name: route53Record.Name,
@@ -166,7 +168,7 @@ function convertRecord(route53Record) {
  * @param {string} zone - Zone name (optional, for appending to subdomains)
  * @returns {string} - Domain name with trailing dot
  */
-function ensureTrailingDot(name, zone = null) {
+function ensureTrailingDot(name: string, zone: string | null = null): string {
   // If name already has trailing dot, return as is
   if (name.endsWith('.')) {
     return name;

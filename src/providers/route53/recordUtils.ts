@@ -1,16 +1,17 @@
-// @ts-nocheck
 /**
  * Record utility functions for Route53 provider
  */
 import logger from '../../utils/logger';
+import type { DnsRecord, DnsRecordConfig } from '../../../types/dns';
+import type { Route53Record, Route53RecordSet } from '../../../types/providers';
 
 /**
  * Standardize Route53 records to internal format
  */
-function standardizeRecords(route53Records) {
+function standardizeRecords(route53Records: Route53RecordSet[]): Route53Record[] {
   return route53Records.map(record => {
     // Create a standardized record with common fields
-    const standardRecord = {
+    const standardRecord: Route53Record = {
       id: `${record.Name}:${record.Type}`, // Route53 doesn't have record IDs, create a composite key
       type: record.Type,
       name: record.Name.endsWith('.') ? record.Name.slice(0, -1) : record.Name,
@@ -68,7 +69,7 @@ function standardizeRecords(route53Records) {
 /**
  * Check if a record needs to be updated
  */
-function recordNeedsUpdate(existing, newRecord) {
+function recordNeedsUpdate(existing: DnsRecord, newRecord: DnsRecordConfig): boolean {
   logger.trace(`Route53Provider.recordNeedsUpdate: Comparing records for ${newRecord.name}`);
   logger.trace(`Route53Provider.recordNeedsUpdate: Existing: ${JSON.stringify(existing)}`);
   logger.trace(`Route53Provider.recordNeedsUpdate: New: ${JSON.stringify(newRecord)}`);

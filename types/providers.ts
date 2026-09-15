@@ -1,3 +1,6 @@
+import type { AliasTarget, ResourceRecord, ResourceRecordSet, RRType } from '@aws-sdk/client-route-53';
+import type { DnsRecord } from './dns';
+
 export interface CloudflareRecordData {
   name?: string;
   priority?: number;
@@ -79,4 +82,31 @@ export interface DigitalOceanRecordsResponse {
 
 export interface DigitalOceanRecordResponse {
   domain_record: DigitalOceanApiRecord;
+}
+
+export interface Route53ResourceRecord extends ResourceRecord {
+  Value: string;
+}
+
+export interface Route53RecordSet extends ResourceRecordSet {
+  Name: string;
+  Type: RRType;
+  ResourceRecords?: Route53ResourceRecord[];
+}
+
+export interface Route53RecordPayload extends ResourceRecordSet {
+  Name: string;
+  Type: RRType;
+  TTL: number;
+  ResourceRecords: ResourceRecord[];
+}
+
+export interface Route53Record extends DnsRecord {
+  id: string;
+  isAlias?: boolean;
+  aliasTarget?: {
+    hostedZoneId: AliasTarget['HostedZoneId'];
+    dnsName: AliasTarget['DNSName'];
+    evaluateTargetHealth: AliasTarget['EvaluateTargetHealth'];
+  };
 }
