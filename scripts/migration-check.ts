@@ -2,6 +2,7 @@ import { parse as acornParse } from 'acorn';
 import type { Expression, Identifier, ImportDeclaration, Literal, MemberExpression, ModuleDeclaration, Node, Pattern, Program, Statement } from 'acorn';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export interface Difference {
@@ -22,6 +23,7 @@ interface Flags {
 }
 
 type ValueFlag = 'baseline' | 'rev' | 'from' | 'to' | 'expected';
+type FlagName = ValueFlag | 'list';
 type Loose = Record<string, unknown>;
 type LockEntry = { version?: string; dev?: boolean };
 type TopLevel = Statement | ModuleDeclaration;
@@ -81,16 +83,34 @@ interface ExportShape {
   names: Set<string>;
 }
 
+interface TreeComparison {
+  count: number;
+  differences: Difference[];
+}
+
+interface TestNames {
+  names: string[];
+  declaredCount: number | null;
+}
+
 class UsageError extends Error {}
 
 const IGNORED_KEYS = new Set(['start', 'end', 'loc', 'range', 'raw', 'directive']);
 const VALUE_FLAGS = new Set(['--baseline', '--rev', '--from', '--to', '--expected']);
+const FLAG_NAMES: FlagName[] = ['baseline', 'rev', 'from', 'to', 'expected', 'list'];
 const MAX_REPORTED_LINES = 5;
+const FILE_LEVEL = '(file)';
+const EXPECTED_TEST_COUNT = 130;
+const BASELINE_TESTS = path.join('ralph', 'projects', 'typescript-migration', 'baseline-tests.txt');
 const USAGE = [
   'usage: migration-check <subcommand> [options]',
   '  baseline-emit [--baseline <sha>]',
   '  syntax-map [--baseline <sha>] [--rev <ref>]',
+  '  erasure --from <ref> [--to <ref>]',
   '  lockfile [--baseline <sha>]',
+  '  test-names [--expected <file> | --baseline <sha>] [--list]',
+  '  compare-dirs <left> <right>',
+  '  final',
 ].join('\n');
 
 export function git(args: string[], cwd?: string): string {
@@ -128,8 +148,13 @@ export function parseFlags(argv: string[]): Flags {
   return flags;
 }
 
-function expectNoPositional(flags: Flags): void {
-  if (flags.positional.length > 0) throw new UsageError(`unexpected argument ${flags.positional[0]}`);
+function expectFlags(flags: Flags, allowed: FlagName[], positional = 0): void {
+  if (flags.positional.length > positional) throw new UsageError(`unexpected argument ${flags.positional[positional]}`);
+  if (flags.positional.length < positional) throw new UsageError(`expected ${positional} arguments, found ${flags.positional.length}`);
+  for (const name of FLAG_NAMES) {
+    const given = name === 'list' ? flags.list : flags[name] !== undefined;
+    if (given && !allowed.includes(name)) throw new UsageError(`--${name} is not supported by this subcommand`);
+  }
 }
 
 export function parse(source: string, sourceType: 'script' | 'module'): Program {
@@ -572,6 +597,130 @@ export function productionClosureDiff(baselineLock: unknown, currentLock: unknow
   return differences;
 }
 
+function listTree(root: string, dir = ''): string[] {
+  return fs.readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap((entry) => {
+    const file = path.posix.join(dir, entry.name);
+    return entry.isDirectory() ? listTree(root, file) : [file];
+  });
+}
+
+function expectDirectory(dir: string): void {
+  if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`not a directory: ${dir}`);
+}
+
+function parseScript(source: string): Program | string {
+  try {
+    return parse(source, 'script');
+  } catch (error) {
+    return `does not parse as a script: ${error.message}`;
+  }
+}
+
+function compareTreeFile(file: string, leftDir: string, rightDir: string): Difference | null {
+  const leftBytes = fs.readFileSync(path.join(leftDir, file));
+  const rightBytes = fs.readFileSync(path.join(rightDir, file));
+  if (!file.endsWith('.js')) {
+    return leftBytes.equals(rightBytes) ? null : { file, path: '(content)', left: `${leftBytes.length} bytes`, right: `${rightBytes.length} bytes` };
+  }
+  const leftSource = leftBytes.toString('utf8');
+  const rightSource = rightBytes.toString('utf8');
+  const left = parseScript(leftSource);
+  const right = parseScript(rightSource);
+  if (typeof left === 'string' || typeof right === 'string') {
+    return { file, path: '(parse)', left: typeof left === 'string' ? left : 'parses', right: typeof right === 'string' ? right : 'parses' };
+  }
+  const d = firstDifference(left, right);
+  return d ? describeDifference(file, { source: leftSource, tree: left }, { source: rightSource, tree: right }, d.path) : null;
+}
+
+function diffTrees(leftDir: string, rightDir: string): TreeComparison {
+  expectDirectory(leftDir);
+  expectDirectory(rightDir);
+  const left = new Set(listTree(leftDir));
+  const right = new Set(listTree(rightDir));
+  const files = [...new Set([...left, ...right])].sort();
+  const differences: Difference[] = [];
+  for (const file of files) {
+    if (!right.has(file)) differences.push({ file, path: FILE_LEVEL, left: 'present', right: 'missing' });
+    else if (!left.has(file)) differences.push({ file, path: FILE_LEVEL, left: 'missing', right: 'present' });
+    else {
+      const d = compareTreeFile(file, leftDir, rightDir);
+      if (d) differences.push(d);
+    }
+  }
+  return { count: files.length, differences };
+}
+
+export function compareTrees(leftDir: string, rightDir: string): Difference[] {
+  return diffTrees(leftDir, rightDir).differences;
+}
+
+function formatTreeDifference(d: Difference, leftLabel: string, rightLabel: string): string {
+  if (d.path !== FILE_LEVEL) return formatDifference(d, leftLabel, rightLabel);
+  return `${d.file}: only in ${d.left === 'present' ? leftLabel : rightLabel}`;
+}
+
+function popFrom(stack: { indent: number }[], indent: number): void {
+  while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+}
+
+export function parseTapTestNames(tap: string): TestNames {
+  const names: string[] = [];
+  const stack: { indent: number; name: string }[] = [];
+  let declaredCount: number | null = null;
+  let yamlEnd: string | null = null;
+  for (const line of tap.split(/\r?\n/)) {
+    if (yamlEnd !== null) {
+      if (line === yamlEnd) yamlEnd = null;
+      continue;
+    }
+    const indent = /^ */.exec(line)![0].length;
+    const text = line.slice(indent);
+    if (text === '---') {
+      yamlEnd = `${' '.repeat(indent)}...`;
+      continue;
+    }
+    const subtest = /^# Subtest: (.*)$/.exec(text);
+    if (subtest) {
+      popFrom(stack, indent);
+      stack.push({ indent, name: subtest[1] });
+      continue;
+    }
+    const result = /^(?:not )?ok \d+(?: - (.*))?$/.exec(text);
+    if (result) {
+      popFrom(stack, indent);
+      const own = (result[1] ?? '').replace(/ # (?:SKIP|TODO)\b.*$/i, '');
+      names.push([...stack.map((entry) => entry.name), own].join(' > '));
+      continue;
+    }
+    const count = indent === 0 ? /^# tests (\d+)$/.exec(text) : null;
+    if (count) declaredCount = Number(count[1]);
+  }
+  return { names: names.sort(), declaredCount };
+}
+
+function multisetMinus(a: string[], b: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of b) counts.set(item, (counts.get(item) ?? 0) + 1);
+  return a.filter((item) => {
+    const left = counts.get(item) ?? 0;
+    counts.set(item, left - 1);
+    return left <= 0;
+  });
+}
+
+export function finalViolations(input: { trackedFiles: string[]; read: (p: string) => string; tsconfig: string }): string[] {
+  const violations: string[] = [];
+  for (const file of input.trackedFiles) {
+    if (file.endsWith('.js')) violations.push(`${file}: tracked .js file`);
+    input.read(file).split('\n').forEach((line, i) => {
+      if (/^\/\/ @ts-nocheck/.test(line)) violations.push(`${file}:${i + 1}: // @ts-nocheck`);
+    });
+  }
+  if (input.tsconfig.includes('"allowJs"')) violations.push('tsconfig.json: "allowJs" is present');
+  return violations;
+}
+
 function checkEmittedFile(root: string, sha: string, file: string): string | null {
   const emittedPath = path.join(root, 'dist', file);
   if (!fs.existsSync(emittedPath)) return `${file}: missing dist/${file}`;
@@ -586,7 +735,7 @@ function checkEmittedFile(root: string, sha: string, file: string): string | nul
 }
 
 function runBaselineEmit(flags: Flags): number {
-  expectNoPositional(flags);
+  expectFlags(flags, ['baseline']);
   const root = repoRoot();
   const sha = resolveCommit(flags.baseline ?? defaultBaseline(), root);
   const files = git(['ls-tree', '-r', '--name-only', sha, '--', 'src', 'test'], root).split('\n').filter((f) => f.endsWith('.js'));
@@ -601,7 +750,7 @@ function runBaselineEmit(flags: Flags): number {
 }
 
 function runLockfile(flags: Flags): number {
-  expectNoPositional(flags);
+  expectFlags(flags, ['baseline']);
   const root = repoRoot();
   const sha = resolveCommit(flags.baseline ?? defaultBaseline(), root);
   const baselineLock = JSON.parse(git(['show', `${sha}:package-lock.json`], root));
@@ -647,7 +796,7 @@ function readWorkingTree(root: string, extensions: string[]): Map<string, string
 }
 
 function runSyntaxMap(flags: Flags): number {
-  expectNoPositional(flags);
+  expectFlags(flags, ['baseline', 'rev']);
   const root = repoRoot();
   const sha = resolveCommit(flags.baseline ?? defaultBaseline(), root);
   const baseline = readTree(root, sha, ['.js']);
@@ -683,10 +832,145 @@ function runSyntaxMap(flags: Flags): number {
   return baseline.size > 0 && errors.length === 0 && resolution.length === 0 ? 0 : 1;
 }
 
+function isSymlink(file: string): boolean {
+  return fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink() ?? false;
+}
+
+function withWorktree<T>(ref: string, options: { build: boolean }, fn: (dir: string) => T): T {
+  const root = repoRoot();
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'migration-check-')));
+  const dir = path.join(tmp, 'wt');
+  const link = path.join(dir, 'node_modules');
+  try {
+    git(['worktree', 'add', '--quiet', '--detach', dir, ref], root);
+    fs.symlinkSync(path.join(root, 'node_modules'), link, 'dir');
+    if (options.build) execFileSync(path.join(root, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], { cwd: dir, stdio: 'inherit' });
+    return fn(dir);
+  } finally {
+    if (isSymlink(link)) fs.unlinkSync(link);
+    if (fs.existsSync(dir)) git(['worktree', 'remove', '--force', dir], root);
+    git(['worktree', 'prune'], root);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function compareDists(fromDist: string, toDist: string): TreeComparison {
+  const total: TreeComparison = { count: 0, differences: [] };
+  for (const sub of ['src', 'test']) {
+    const { count, differences } = diffTrees(path.join(fromDist, sub), path.join(toDist, sub));
+    total.count += count;
+    total.differences.push(...differences.map((d) => ({ ...d, file: `dist/${sub}/${d.file}` })));
+  }
+  return total;
+}
+
+function runErasure(flags: Flags): number {
+  expectFlags(flags, ['from', 'to']);
+  if (flags.from === undefined) throw new UsageError('erasure needs --from <ref>');
+  const root = repoRoot();
+  const from = resolveCommit(flags.from, root);
+  const to = flags.to === undefined ? null : resolveCommit(flags.to, root);
+  const { count, differences } = withWorktree(from, { build: true }, (fromDir) => {
+    const fromDist = path.join(fromDir, 'dist');
+    if (to === null) return compareDists(fromDist, path.join(root, 'dist'));
+    return withWorktree(to, { build: true }, (toDir) => compareDists(fromDist, path.join(toDir, 'dist')));
+  });
+  const range = `(${from} → ${to ?? 'working tree'})`;
+  for (const d of differences) console.log(formatTreeDifference(d, 'from', 'to'));
+  if (differences.length > 0 || count === 0) {
+    console.log(`erasure: ${differences.length} differences in ${count} emitted files ${range}`);
+    return 1;
+  }
+  console.log(`erasure: ${count} emitted files identical ${range}`);
+  return 0;
+}
+
+function runCompareDirs(flags: Flags): number {
+  expectFlags(flags, [], 2);
+  const [left, right] = flags.positional.map((dir) => path.resolve(dir));
+  const { count, differences } = diffTrees(left, right);
+  for (const d of differences) console.log(formatTreeDifference(d, 'left', 'right'));
+  if (differences.length > 0 || count === 0) {
+    console.log(`compare-dirs: ${differences.length} differences in ${count} files (left ${left}, right ${right})`);
+    return 1;
+  }
+  console.log(`compare-dirs: ${count} files structurally identical`);
+  return 0;
+}
+
+function runTap(cwd: string, pattern: string): string {
+  try {
+    return execFileSync(process.execPath, ['--test', '--test-reporter=tap', pattern], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
+  } catch (error) {
+    if (typeof error.stdout !== 'string') throw error;
+    console.error(`test-names: node --test exited with status ${error.status} in ${cwd}`);
+    return error.stdout;
+  }
+}
+
+function runTestNames(flags: Flags): number {
+  expectFlags(flags, ['expected', 'baseline', 'list']);
+  if (flags.expected !== undefined && flags.baseline !== undefined) throw new UsageError('--expected and --baseline cannot be combined');
+  if (flags.expected !== undefined && flags.list) throw new UsageError('--expected and --list cannot be combined');
+  const root = repoRoot();
+  const baseline = flags.baseline === undefined ? null : resolveCommit(flags.baseline, root);
+  const baselineRun = (sha: string) => withWorktree(sha, { build: false }, (dir) => parseTapTestNames(runTap(dir, 'test/**/*.test.js')));
+  const currentRun = () => parseTapTestNames(runTap(root, 'dist/test/**/*.test.js'));
+  if (flags.list) {
+    const run = baseline === null ? currentRun() : baselineRun(baseline);
+    for (const name of run.names) console.log(name);
+    console.error(`test-names: listed ${run.names.length} names (# tests ${run.declaredCount ?? 'missing'}) from ${baseline ?? 'dist/test'}`);
+    return run.names.length > 0 ? 0 : 1;
+  }
+  const problems: string[] = [];
+  let expected: string[];
+  let source: string;
+  if (baseline !== null) {
+    const run = baselineRun(baseline);
+    expected = run.names;
+    source = `baseline ${baseline}`;
+    if (run.declaredCount !== EXPECTED_TEST_COUNT) problems.push(`baseline run declares # tests ${run.declaredCount ?? 'missing'}, expected ${EXPECTED_TEST_COUNT}`);
+  } else {
+    source = path.resolve(root, flags.expected ?? BASELINE_TESTS);
+    expected = fs.readFileSync(source, 'utf8').split('\n').filter((line) => line !== '').sort();
+  }
+  const current = currentRun();
+  for (const name of multisetMinus(expected, current.names)) problems.push(`missing: ${name}`);
+  for (const name of multisetMinus(current.names, expected)) problems.push(`extra: ${name}`);
+  if (current.names.length !== EXPECTED_TEST_COUNT) problems.push(`found ${current.names.length} test names, expected ${EXPECTED_TEST_COUNT}`);
+  if (current.declaredCount !== EXPECTED_TEST_COUNT) problems.push(`dist/test run declares # tests ${current.declaredCount ?? 'missing'}, expected ${EXPECTED_TEST_COUNT}`);
+  for (const line of problems) console.log(line);
+  if (problems.length > 0) {
+    console.log(`test-names: ${problems.length} problems against ${source}`);
+    return 1;
+  }
+  console.log(`test-names: ${current.names.length}/${expected.length} names identical to ${source} (# tests ${current.declaredCount})`);
+  return 0;
+}
+
+function runFinal(flags: Flags): number {
+  expectFlags(flags, []);
+  const root = repoRoot();
+  const trackedFiles = git(['ls-files', '-z', '--', 'src', 'test', 'types', 'scripts'], root).split('\0').filter((file) => file !== '');
+  const violations = finalViolations({
+    trackedFiles,
+    read: (file) => fs.readFileSync(path.join(root, file), 'utf8'),
+    tsconfig: fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8'),
+  });
+  if (trackedFiles.length === 0) violations.push('no tracked files under src, test, types or scripts');
+  for (const line of violations) console.log(line);
+  console.log(violations.length > 0 ? `final: ${violations.length} violations in ${trackedFiles.length} tracked files` : 'final: clean');
+  return violations.length > 0 ? 1 : 0;
+}
+
 const COMMANDS = new Map<string, (flags: Flags) => number>([
   ['baseline-emit', runBaselineEmit],
   ['syntax-map', runSyntaxMap],
+  ['erasure', runErasure],
   ['lockfile', runLockfile],
+  ['test-names', runTestNames],
+  ['compare-dirs', runCompareDirs],
+  ['final', runFinal],
 ]);
 
 export async function main(argv: string[]): Promise<number> {

@@ -1,6 +1,10 @@
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkImportResolution, compareEmitToBaseline, compareSyntaxMap, firstDifference, parse, productionClosureDiff } from './migration-check';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { checkImportResolution, compareEmitToBaseline, compareSyntaxMap, compareTrees, finalViolations, firstDifference, parse, parseTapTestNames, productionClosureDiff } from './migration-check';
 
 function differ(a: string, b: string): { path: string } | null {
   return firstDifference(parse(a, 'script'), parse(b, 'script'));
@@ -343,4 +347,128 @@ test('productionClosureDiff: a field change without a version change is listed',
 test('productionClosureDiff: an entry that becomes dev-only leaves the production closure', () => {
   const current = withPackages({ ...baselineLock.packages, 'node_modules/ms': { version: '2.1.3', integrity: 'sha512-b', dev: true } });
   assert.deepEqual(productionClosureDiff(baselineLock, current), ['removed node_modules/ms']);
+});
+
+const TREE = {
+  'app.js': '"use strict";\nconst a = require("./lib/b");\na(1);\n',
+  'lib/b.js': '"use strict";\nmodule.exports = function b(n) {\n  return n + 1;\n};\n',
+  'data.json': '{ "a": 1 }\n',
+};
+
+function makeTree(t: TestContext, files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compare-trees-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const [file, source] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), source);
+  }
+  return dir;
+}
+
+test('compareTrees: identical trees have no differences', (t) => {
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, TREE)), []);
+});
+
+test('compareTrees: a formatting-only difference passes', (t) => {
+  const reformatted = { ...TREE, 'lib/b.js': "'use strict';\nmodule.exports = function b(n) { return (n + 1); }; // one\n" };
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, reformatted)), []);
+});
+
+test('compareTrees: a changed literal names the file, path and both lines', (t) => {
+  const changed = { ...TREE, 'app.js': '"use strict";\nconst a = require("./lib/b");\na(2);\n' };
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, changed)), [
+    { file: 'app.js', path: '$.body[2].expression.arguments[0].value', left: 'a(1);', right: 'a(2);' },
+  ]);
+});
+
+test('compareTrees: an extra file is reported', (t) => {
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, { ...TREE, 'lib/c.js': '"use strict";\n' })), [
+    { file: 'lib/c.js', path: '(file)', left: 'missing', right: 'present' },
+  ]);
+});
+
+test('compareTrees: a missing file is reported', (t) => {
+  const { 'lib/b.js': _removed, ...rest } = TREE;
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, rest)), [
+    { file: 'lib/b.js', path: '(file)', left: 'present', right: 'missing' },
+  ]);
+});
+
+test('compareTrees: a non-JavaScript file must be byte-identical', (t) => {
+  assert.deepEqual(compareTrees(makeTree(t, TREE), makeTree(t, { ...TREE, 'data.json': '{"a":1}\n' })), [
+    { file: 'data.json', path: '(content)', left: '11 bytes', right: '8 bytes' },
+  ]);
+});
+
+test('compareTrees: a missing directory is an error', (t) => {
+  const dir = makeTree(t, TREE);
+  assert.throws(() => compareTrees(dir, path.join(dir, 'nowhere')), /not a directory/);
+});
+
+const TAP_SAMPLE = [
+  'TAP version 13',
+  '# Logger initialised with level: INFO (2)',
+  '# Subtest: A',
+  '    # Subtest: sever',
+  '    ok 1 - sever # SKIP not on this platform',
+  '      ---',
+  '      duration_ms: 0.5',
+  "      type: 'test'",
+  '      ...',
+  '    1..1',
+  'ok 1 - A',
+  '  ---',
+  '  duration_ms: 1.5',
+  '  ...',
+  '# Subtest: B',
+  '    # Subtest: sever',
+  '        # Subtest: deep',
+  '        not ok 1 - deep',
+  '          ---',
+  '          error: |-',
+  '            ok 9 - not a test result',
+  '          ...',
+  '        1..1',
+  '    ok 1 - sever',
+  '    1..1',
+  'ok 2 - B',
+  '1..2',
+  '# tests 5',
+  '# suites 0',
+  '# pass 4',
+  '',
+].join('\n');
+
+test('parseTapTestNames: nested names are joined, directives stripped and YAML blocks skipped', () => {
+  assert.deepEqual(parseTapTestNames(TAP_SAMPLE), {
+    names: ['A', 'A > sever', 'B', 'B > sever', 'B > sever > deep'],
+    declaredCount: 5,
+  });
+});
+
+test('parseTapTestNames: a missing summary gives a null declared count', () => {
+  assert.deepEqual(parseTapTestNames('ok 1 - x\n    # tests 9\n'), { names: ['x'], declaredCount: null });
+});
+
+function final(files: Record<string, string>, tsconfig = '{ "compilerOptions": { "strict": true } }'): string[] {
+  return finalViolations({ trackedFiles: Object.keys(files), read: (p) => files[p], tsconfig });
+}
+
+test('finalViolations: a clean tree has no violations', () => {
+  assert.deepEqual(final({ 'src/app.ts': "import x from './x';\nconst s = '// @ts-nocheck';\n  // @ts-nocheck\n", 'scripts/c.ts': 'export {};\n' }), []);
+});
+
+test('finalViolations: a tracked .js file is reported', () => {
+  assert.deepEqual(final({ 'src/app.js': 'module.exports = {};\n' }), ['src/app.js: tracked .js file']);
+});
+
+test('finalViolations: a line starting with the nocheck directive is reported', () => {
+  assert.deepEqual(final({ 'src/app.ts': `${NOCHECK}import x from './x';\n`, 'types/t.ts': `export {};\n${NOCHECK}` }), [
+    'src/app.ts:1: // @ts-nocheck',
+    'types/t.ts:2: // @ts-nocheck',
+  ]);
+});
+
+test('finalViolations: allowJs in tsconfig.json is reported', () => {
+  assert.deepEqual(final({}, '{\n  "compilerOptions": {\n    "allowJs": true\n  }\n}\n'), ['tsconfig.json: "allowJs" is present']);
 });
