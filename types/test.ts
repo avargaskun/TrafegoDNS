@@ -66,8 +66,10 @@ export interface StubDnsProviderOptions {
 
 export interface StubDnsProvider {
   init: () => Promise<void>;
+  /** Creates, updates or leaves each record, matched by `type` and case-insensitive `name`. */
   batchEnsureRecords: (configs: StubDnsRecordConfig[]) => Promise<StubDnsRecord[]>;
   getRecordsFromCache: (forceRefresh?: boolean) => Promise<StubDnsRecord[]>;
+  /** Plain method so tests can spy on it with `t.mock.method`. */
   deleteRecord: (id: string) => Promise<boolean>;
   records: StubDnsRecord[];
   batches: StubDnsRecordConfig[][];
@@ -98,6 +100,7 @@ export interface FakeCloudflareListingQuirks {
   omitResultInfo?: boolean;
 }
 
+/** A request as received; headers are deliberately never recorded. */
 export interface FakeCloudflareRequest {
   method: string;
   path: string;
@@ -133,8 +136,11 @@ export interface FakeDockerDaemonOptions {
 }
 
 export interface FakeDockerDaemonStats {
+  /** Total `/events` requests received, refused and hanging ones included. */
   eventsConnections: number;
+  /** Total `/containers/json` requests received, failed and hanging ones included. */
   listRequests: number;
+  /** Total events written, counted once per receiving `/events` response. */
   eventsSent: number;
 }
 
@@ -147,9 +153,12 @@ export interface FakeDockerDaemon {
   sever: () => void;
   endCleanly: () => void;
   endMidObject: () => void;
+  /** `fail` answers 500; `hang` never answers until `stop()`. */
   setContainersMode: (mode: ContainersMode) => void;
+  /** `refuse` answers `/events` with 500; `hang` never sends headers until the client aborts or `stop()`. */
   setEventsMode: (mode: EventsMode) => void;
   stop: () => Promise<void>;
+  /** Listens again on the same port. */
   restart: () => Promise<void>;
   openEventStreams: () => number;
   stats: FakeDockerDaemonStats;

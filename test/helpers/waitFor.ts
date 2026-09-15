@@ -4,7 +4,7 @@
  * @param {() => T | Promise<T>} predicate - Sync or async condition; a truthy result ends the wait.
  * @param {number} [timeoutMs=2000] - Maximum time to wait.
  * @param {string} [description='condition'] - Used in the timeout error message.
- * @returns {Promise<T>} The first truthy value returned by `predicate`.
+ * @returns {Promise<NonNullable<T>>} The first truthy value returned by `predicate`.
  */
 async function waitFor<T>(predicate: () => T | Promise<T>, timeoutMs: number = 2000, description: string = 'condition'): Promise<NonNullable<T>> {
   const deadline = Date.now() + timeoutMs;

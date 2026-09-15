@@ -4,7 +4,7 @@ import type { TestConfig } from '../../types/test';
 /**
  * Plain config object for tests; stands in for ConfigManager, which must never be constructed in tests.
  * @param {Partial<TestConfig> & Record<string, unknown>} [overrides={}] - Values that replace the defaults.
- * @returns {TestConfig & Record<string, unknown>}
+ * @returns {ConfigManager}
  */
 function makeConfig(overrides: Partial<TestConfig> & Record<string, unknown> = {}): ConfigManager {
   return {

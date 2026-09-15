@@ -90,7 +90,7 @@ async function startTraefikPipeline(t: TestContext, options: TraefikPipelineOpti
 
 /**
  * Hostnames the stub DNS provider received in any batch.
- * @param {import('./stubDnsProvider').StubDnsProvider} stub
+ * @param {import('../../types/test').StubDnsProvider} stub
  * @returns {string[]}
  */
 function batchedHostnames(stub: StubDnsProvider): string[] {
