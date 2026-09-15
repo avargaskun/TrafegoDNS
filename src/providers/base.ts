@@ -34,7 +34,7 @@ class DNSProvider {
   async init(): Promise<boolean> {
     throw new Error('Method init() must be implemented by subclass');
   }
-
+  
   /**
    * Refresh the DNS record cache
    * @returns {Promise<Array>} - Array of DNS records
@@ -80,7 +80,7 @@ class DNSProvider {
   async listRecords(params: ListRecordsParams = {}): Promise<DnsRecord[]> {
     throw new Error('Method listRecords() must be implemented by subclass');
   }
-
+  
   /**
    * Create a new DNS record
    * @param {Object} record - The record to create
@@ -89,7 +89,7 @@ class DNSProvider {
   async createRecord(record: DnsRecordConfig): Promise<DnsRecord> {
     throw new Error('Method createRecord() must be implemented by subclass');
   }
-
+  
   /**
    * Update an existing DNS record
    * @param {string} id - Record ID
@@ -99,7 +99,7 @@ class DNSProvider {
   async updateRecord(id: DnsRecord['id'], record: DnsRecordConfig): Promise<DnsRecord> {
     throw new Error('Method updateRecord() must be implemented by subclass');
   }
-
+  
   /**
    * Delete a DNS record
    * @param {string} id - Record ID
@@ -108,7 +108,7 @@ class DNSProvider {
   async deleteRecord(id: DnsRecord['id']): Promise<boolean> {
     throw new Error('Method deleteRecord() must be implemented by subclass');
   }
-
+  
   /**
    * Batch process multiple DNS records at once
    * @param {Array<Object>} recordConfigs - Array of record configurations
@@ -117,7 +117,7 @@ class DNSProvider {
   async batchEnsureRecords(recordConfigs: DnsRecordConfig[]): Promise<DnsRecord[]> {
     throw new Error('Method batchEnsureRecords() must be implemented by subclass');
   }
-
+  
   /**
    * Check if a record needs to be updated
    * @param {Object} existing - The existing record
@@ -127,7 +127,7 @@ class DNSProvider {
   recordNeedsUpdate(existing: DnsRecord, newRecord: DnsRecordConfig): boolean {
     throw new Error('Method recordNeedsUpdate() must be implemented by subclass');
   }
-
+  
   /**
    * Validate a record configuration
    * @param {Object} record - The record to validate
