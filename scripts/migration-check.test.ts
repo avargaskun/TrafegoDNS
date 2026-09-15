@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compareEmitToBaseline, firstDifference, parse, productionClosureDiff } from './migration-check';
+import { checkImportResolution, compareEmitToBaseline, compareSyntaxMap, firstDifference, parse, productionClosureDiff } from './migration-check';
 
 function differ(a: string, b: string): { path: string } | null {
   return firstDifference(parse(a, 'script'), parse(b, 'script'));
@@ -94,6 +94,203 @@ test('firstDifference: (a?.b).c differs from a?.b.c', () => {
 
 test('firstDifference: an added class field is reported', () => {
   assert.notEqual(differ('class A {\n  m() {}\n}', 'class A {\n  x;\n  m() {}\n}'), null);
+});
+
+function syntaxMap(baseline: string, converted: string, named: string[] = []): string[] {
+  return compareSyntaxMap(baseline, converted, { namedExportModules: new Set(named) });
+}
+
+const NOCHECK = '// @ts-nocheck\n';
+
+test('compareSyntaxMap: a destructured require maps to named imports with renames', () => {
+  assert.deepEqual(syntaxMap("const { a, b: c } = require('m');\nf(a, c);\n", "import { a, b as c } from 'm';\nf(a, c);\n"), []);
+});
+
+test('compareSyntaxMap: a single-binding require maps to a default import', () => {
+  assert.deepEqual(syntaxMap("const X = require('m');\nX();\n", "import X from 'm';\nX();\n"), []);
+});
+
+test('compareSyntaxMap: the header line and comments inside import braces are ignored', () => {
+  const baseline = "const {\n  a, // first\n  b: c\n} = require('m');\nf(a, c);\n";
+  const converted = `${NOCHECK}import {\n  a, // first\n  b as c\n} from 'm';\nf(a, c);\n`;
+  assert.deepEqual(syntaxMap(baseline, converted), []);
+});
+
+test('compareSyntaxMap: import * as is required for a named-export module and rejected otherwise', () => {
+  const baseline = "const golden = require('../fixtures/golden');\ngolden.run();\n";
+  const namespace = "import * as golden from '../fixtures/golden';\ngolden.run();\n";
+  const plain = "import golden from '../fixtures/golden';\ngolden.run();\n";
+  assert.deepEqual(syntaxMap(baseline, namespace, ['../fixtures/golden']), []);
+  assert.deepEqual(syntaxMap(baseline, namespace), [
+    "import #1: expected import golden from '../fixtures/golden', found import * as golden from '../fixtures/golden'",
+  ]);
+  assert.deepEqual(syntaxMap(baseline, plain, ['../fixtures/golden']), [
+    "import #1: expected import * as golden from '../fixtures/golden', found import golden from '../fixtures/golden'",
+  ]);
+});
+
+test('compareSyntaxMap: import * as is rejected where the baseline destructured', () => {
+  assert.deepEqual(syntaxMap("const { a } = require('m');\na();\n", "import * as m from 'm';\na();\n", ['m']), [
+    "import #1: expected import { a } from 'm', found import * as m from 'm'",
+  ]);
+});
+
+test('compareSyntaxMap: reordered imports are reported', () => {
+  assert.deepEqual(syntaxMap("const a = require('a');\nconst b = require('b');\nf(a, b);\n", "import b from 'b';\nimport a from 'a';\nf(a, b);\n"), [
+    "import #1: expected import a from 'a', found import b from 'b'",
+    "import #2: expected import b from 'b', found import a from 'a'",
+  ]);
+});
+
+test('compareSyntaxMap: an import moved past a statement is reported', () => {
+  assert.deepEqual(syntaxMap("const a = require('a');\nconst b = require('b');\nf(a, b);\n", "import a from 'a';\nf(a, b);\nimport b from 'b';\n"), [
+    "import #2: import b from 'b' is at statement index 1, expected 0",
+  ]);
+});
+
+test('compareSyntaxMap: a changed module specifier is reported', () => {
+  assert.deepEqual(syntaxMap("const a = require('./a');\na();\n", "import a from './b';\na();\n"), [
+    "import #1: expected import a from './a', found import a from './b'",
+  ]);
+});
+
+test('compareSyntaxMap: a missing or renamed binding is reported', () => {
+  assert.deepEqual(syntaxMap("const { a, b } = require('m');\nf(a, b);\n", "import { a } from 'm';\nf(a, b);\n"), [
+    "import #1: expected import { a, b } from 'm', found import { a } from 'm'",
+  ]);
+  assert.deepEqual(syntaxMap("const { a } = require('m');\nf(a);\n", "import { a as z } from 'm';\nf(a);\n"), [
+    "import #1: expected import { a } from 'm', found import { a as z } from 'm'",
+  ]);
+});
+
+test('compareSyntaxMap: a missing or extra import is reported', () => {
+  assert.deepEqual(syntaxMap("const a = require('a');\nconst b = require('b');\n", "import a from 'a';\n"), [
+    "import #2: expected import b from 'b', found no import",
+  ]);
+  assert.deepEqual(syntaxMap("const a = require('a');\n", "import a from 'a';\nimport 'b';\n"), ["import #2: unexpected import 'b'"]);
+});
+
+test('compareSyntaxMap: an all-shorthand module.exports maps to an export list in the same order', () => {
+  const baseline = 'const a = 1;\nconst b = 2;\nmodule.exports = { a, b };\n';
+  assert.deepEqual(syntaxMap(baseline, 'const a = 1;\nconst b = 2;\nexport { a, b };\n'), []);
+  assert.deepEqual(syntaxMap(baseline, 'const a = 1;\nconst b = 2;\nexport { b, a };\n'), ['export list: expected { a, b }, found { b, a }']);
+});
+
+test('compareSyntaxMap: an all-shorthand module.exports must not become a default export', () => {
+  const errors = syntaxMap('const a = 1;\nmodule.exports = { a };\n', 'const a = 1;\nexport default { a };\n');
+  assert.deepEqual(errors, ['export default (line 2): unexpected', 'export list: expected { a }, found {}']);
+});
+
+test('compareSyntaxMap: a default export, an export list and an export const map together', () => {
+  const baseline = 'const X = { j: 1 };\nconst k = 2;\nmodule.exports = X;\nmodule.exports.k = k;\nmodule.exports.j = X.j;\n';
+  const converted = 'const X = { j: 1 };\nconst k = 2;\nexport default X;\nexport { k };\nexport const j = X.j;\n';
+  assert.deepEqual(syntaxMap(baseline, converted), []);
+});
+
+test('compareSyntaxMap: a run of module.exports.k = k statements may become one export list', () => {
+  const baseline = 'class D {}\nconst T = {};\nfunction c() {}\nmodule.exports = D;\nmodule.exports.T = T;\nmodule.exports.c = c;\nmodule.exports.classify = D.classify;\n';
+  const converted = 'class D {}\nconst T = {};\nfunction c() {}\nexport default D;\nexport { T, c };\nexport const classify = D.classify;\n';
+  assert.deepEqual(syntaxMap(baseline, converted), []);
+});
+
+test('compareSyntaxMap: an export list must not merge names across another export', () => {
+  const baseline = 'const a = 1;\nconst b = 2;\nconst X = {};\nmodule.exports.a = a;\nmodule.exports.j = X.j;\nmodule.exports.b = b;\n';
+  const converted = 'const a = 1;\nconst b = 2;\nconst X = {};\nexport { a, b };\nexport const j = X.j;\n';
+  assert.deepEqual(syntaxMap(baseline, converted), ['plumbing order: #2 should be export const j, found export { b }']);
+});
+
+test('compareSyntaxMap: an export statement moved to a different index is reported', () => {
+  assert.deepEqual(syntaxMap('const a = 1;\nmodule.exports = { a };\nf();\n', 'const a = 1;\nf();\nexport { a };\n'), [
+    'export { a }: at statement index 2, expected 1',
+  ]);
+  assert.deepEqual(syntaxMap('class A {}\nmodule.exports = A;\nf();\n', 'class A {}\nf();\nexport default A;\n'), [
+    'export default: at statement index 2, expected 1',
+  ]);
+});
+
+test('compareSyntaxMap: a renamed export is reported', () => {
+  assert.deepEqual(syntaxMap('const a = 1;\nmodule.exports = { a };\n', 'const a = 1;\nexport { a as b };\n'), [
+    'export { a as b } (line 2): renamed exports are not allowed',
+    'export list: expected { a }, found { b }',
+  ]);
+});
+
+test('compareSyntaxMap: a changed default or const export expression is reported', () => {
+  const baseline = "module.exports = {\n  A: 'a',\n  B: 'b'\n};\n";
+  assert.deepEqual(syntaxMap(baseline, "export default {\n  A: 'a',\n  B: 'b'\n};\n"), []);
+  const [changed] = syntaxMap(baseline, "export default {\n  A: 'a',\n  B: 'c'\n};\n");
+  assert.match(changed, /^export default: differs at \$\.properties\[1\]\.value\.value\n/);
+  assert.match(changed, /B: 'b'/);
+  assert.match(changed, /B: 'c'/);
+  const [constant] = syntaxMap('class D {}\nmodule.exports.x = D.x;\n', 'class D {}\nexport const x = D.y;\n');
+  assert.match(constant, /^export const x: differs at \$\.property\.name/);
+});
+
+test('compareSyntaxMap: a missing or unexpected export const is reported', () => {
+  assert.deepEqual(syntaxMap('class D {}\nmodule.exports.x = D.x;\n', 'class D {}\n'), ['export const x: missing (baseline line 2)']);
+  assert.deepEqual(syntaxMap('class D {}\n', 'class D {}\nexport const x = D.x;\n'), ['export const x (line 2): unexpected']);
+});
+
+test('compareSyntaxMap: a change to a non-plumbing statement is reported', () => {
+  const errors = syntaxMap("const a = require('a');\nf(a, 1);\n", "import a from 'a';\nf(a, 2);\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^non-plumbing code: differs at \$\.body\[0\]\.expression\.arguments\[1\]\.value\n/);
+});
+
+test('compareSyntaxMap: a changed inline require inside a function is reported', () => {
+  const baseline = "function g() {\n  const fs = require('fs');\n  return fs;\n}\n";
+  assert.deepEqual(syntaxMap(baseline, baseline), []);
+  assert.equal(syntaxMap(baseline, "function g() {\n  const fs = require('node:fs');\n  return fs;\n}\n").length, 1);
+  assert.notDeepEqual(syntaxMap(baseline, "import fs from 'fs';\nfunction g() {\n  return fs;\n}\n"), []);
+});
+
+test('compareSyntaxMap: an unsupported export form is reported', () => {
+  const errors = syntaxMap('function f() {}\nmodule.exports = { f };\n', 'export function f() {}\n');
+  assert.ok(errors.includes('line 1: unsupported export form: export function f() {}'), errors.join('\n'));
+});
+
+test('compareSyntaxMap: a converted file that does not parse is reported, not thrown', () => {
+  const errors = syntaxMap("const a = require('a');\n", "import a from 'a';\nconst n: number = a;\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^converted file does not parse as a module: /);
+});
+
+function resolutionTree(overrides: Record<string, string> = {}): Map<string, string> {
+  return new Map(Object.entries({
+    'src/app.ts': "import Service from './service';\nimport { helper } from './lib';\nimport * as lib from './lib';\nimport { extra } from './service';\nimport fs from 'node:fs';\nnew Service(helper, lib, extra, fs);\n",
+    'src/service.ts': "import { helper } from './lib';\nclass Service {}\nexport default Service;\nexport const extra = helper;\n",
+    'src/lib/index.ts': 'function helper() {}\nexport { helper };\n',
+    ...overrides,
+  }));
+}
+
+test('checkImportResolution: a consistent tree has no errors', () => {
+  assert.deepEqual(checkImportResolution(resolutionTree()), []);
+});
+
+test('checkImportResolution: a default import of a named-only module is reported', () => {
+  assert.deepEqual(checkImportResolution(resolutionTree({ 'src/app.ts': "import helper from './lib';\nhelper();\n" })), [
+    "src/app.ts: import helper from './lib': src/lib/index.ts has no default export",
+  ]);
+});
+
+test('checkImportResolution: a named import of a missing name is reported', () => {
+  assert.deepEqual(checkImportResolution(resolutionTree({ 'src/app.ts': "import { missing } from './lib';\nmissing();\n" })), [
+    "src/app.ts: import { missing } from './lib': src/lib/index.ts does not export missing",
+  ]);
+});
+
+test('checkImportResolution: a namespace import of a module with a default export is reported', () => {
+  assert.deepEqual(checkImportResolution(resolutionTree({ 'src/app.ts': "import * as service from './service';\nservice.run();\n" })), [
+    "src/app.ts: import * as service from './service': src/service.ts has a default export",
+  ]);
+});
+
+test('checkImportResolution: an unresolvable relative import is reported', () => {
+  assert.deepEqual(checkImportResolution(resolutionTree({ 'src/app.ts': "import x from './nowhere';\nimport y from '../lib';\nx(y);\n" })), [
+    "src/app.ts: import x from './nowhere': does not resolve to a .ts file",
+    "src/app.ts: import y from '../lib': does not resolve to a .ts file",
+  ]);
 });
 
 const baselineLock = {
