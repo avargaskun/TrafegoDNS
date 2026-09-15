@@ -42,3 +42,41 @@ export interface CloudflareResponse<T> {
     total_pages?: number;
   };
 }
+
+export interface DigitalOceanRecordPayload {
+  type: string;
+  name: string;
+  ttl: number;
+  data?: string;
+  priority?: number;
+  weight?: number;
+  port?: number;
+  flags?: number;
+  tag?: string;
+}
+
+export interface DigitalOceanApiRecord {
+  id: number;
+  type: string;
+  name: string;
+  data: string;
+  ttl: number;
+  priority: number | null;
+  port: number | null;
+  weight: number | null;
+  flags: number | null;
+  tag: string | null;
+}
+
+export interface DigitalOceanRecordsResponse {
+  domain_records: DigitalOceanApiRecord[];
+  links?: {
+    pages?: {
+      next?: string;
+    };
+  };
+}
+
+export interface DigitalOceanRecordResponse {
+  domain_record: DigitalOceanApiRecord;
+}

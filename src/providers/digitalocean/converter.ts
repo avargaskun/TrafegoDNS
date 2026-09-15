@@ -1,20 +1,21 @@
-// @ts-nocheck
 /**
  * DigitalOcean record format converter utilities
  * Handles conversion between internal format and DigitalOcean API format
  */
 import logger from '../../utils/logger';
+import type { DnsRecord, DnsRecordConfig } from '../../../types/dns';
+import type { DigitalOceanApiRecord, DigitalOceanRecordPayload } from '../../../types/providers';
 
 /**
  * Convert standard record format to DigitalOcean API format
  * @param {Object} record - Record in standard format
  * @returns {Object} - Record in DigitalOcean format
  */
-function convertToDigitalOceanFormat(record) {
+function convertToDigitalOceanFormat(record: DnsRecordConfig): DigitalOceanRecordPayload {
   logger.trace(`digitalocean.converter: Converting record to DigitalOcean format: ${JSON.stringify(record)}`);
   
   // Base record format for DigitalOcean
-  const doRecord = {
+  const doRecord: DigitalOceanRecordPayload = {
     type: record.type,
     name: record.name,
     ttl: record.ttl
@@ -63,7 +64,7 @@ function convertToDigitalOceanFormat(record) {
  * @param {string} domain - The domain name
  * @returns {Object} - Record in standard format
  */
-function convertRecord(doRecord, domain) {
+function convertRecord(doRecord: DigitalOceanApiRecord, domain: string): DnsRecord {
   logger.trace(`digitalocean.converter: Converting from DigitalOcean format: ${JSON.stringify(doRecord)}`);
   
   // Basic record format
@@ -71,7 +72,7 @@ function convertRecord(doRecord, domain) {
     id: doRecord.id,
     type: doRecord.type,
     ttl: doRecord.ttl
-  };
+  } as DnsRecord;
   
   // Handle name - DigitalOcean uses @ for apex domains
   if (doRecord.name === '@') {

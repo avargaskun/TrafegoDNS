@@ -66,7 +66,7 @@ class DNSProvider {
    * @param {string} name - Record name
    * @returns {Object|null} - The found record or null
    */
-  findRecordInCache(type: string, name: string): DnsRecord | undefined {
+  findRecordInCache(type: string, name: string): DnsRecord | null | undefined {
     return this.recordCache.records.find(
       record => record.type === type && record.name === name
     );

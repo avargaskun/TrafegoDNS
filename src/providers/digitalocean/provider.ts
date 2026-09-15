@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DigitalOcean DNS Provider
  * Core implementation of the DNSProvider interface for DigitalOcean
@@ -8,9 +7,26 @@ import DNSProvider from '../base';
 import logger from '../../utils/logger';
 import { convertToDigitalOceanFormat } from './converter';
 import { validateRecord } from './validator';
+import type { AxiosInstance } from 'axios';
+import type ConfigManager from '../../config/ConfigManager';
+import type { DnsRecord, DnsRecordConfig, ListRecordsParams } from '../../../types/dns';
+import type { DigitalOceanApiRecord, DigitalOceanRecordResponse, DigitalOceanRecordsResponse } from '../../../types/providers';
+
+interface PendingChanges {
+  create: { record: DnsRecordConfig }[];
+  update: { id: DigitalOceanApiRecord['id']; record: DnsRecordConfig; existing: DigitalOceanApiRecord }[];
+  unchanged: { record: DnsRecordConfig; existing: DigitalOceanApiRecord }[];
+  apex: { record: DnsRecordConfig }[];
+}
 
 class DigitalOceanProvider extends DNSProvider {
-  constructor(config) {
+  declare token: string;
+  declare domain: string;
+  declare client: AxiosInstance;
+  declare recordCache: { records: DigitalOceanApiRecord[]; lastUpdated: number };
+  declare lastApexRecord: DigitalOceanApiRecord | undefined;
+
+  constructor(config: ConfigManager) {
     super(config);
     
     logger.trace('DigitalOceanProvider.constructor: Initializing with config');
@@ -34,7 +50,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Initialize API by verifying domain exists
    */
-  async init() {
+  async init(): Promise<boolean> {
     logger.trace(`DigitalOceanProvider.init: Starting initialization for domain "${this.domain}"`);
     
     try {
@@ -70,7 +86,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Refresh the DNS record cache
    */
-  async refreshRecordCache() {
+  async refreshRecordCache(): Promise<DigitalOceanApiRecord[]> {
     logger.trace('DigitalOceanProvider.refreshRecordCache: Starting cache refresh');
     
     try {
@@ -109,14 +125,14 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Fetch all records, handling pagination
    */
-  async fetchAllRecords() {
-    let allRecords = [];
+  async fetchAllRecords(): Promise<DigitalOceanApiRecord[]> {
+    let allRecords: DigitalOceanApiRecord[] = [];
     let nextPage = 1;
     let hasMorePages = true;
     
     while (hasMorePages) {
       try {
-        const response = await this.client.get(`/domains/${this.domain}/records`, {
+        const response = await this.client.get<DigitalOceanRecordsResponse>(`/domains/${this.domain}/records`, {
           params: { page: nextPage, per_page: 100 }
         });
         
@@ -144,7 +160,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Update a record in the cache
    */
-  updateRecordInCache(record) {
+  updateRecordInCache(record: DigitalOceanApiRecord): void {
     logger.trace(`DigitalOceanProvider.updateRecordInCache: Updating record in cache: ID=${record.id}, type=${record.type}, name=${record.name}`);
     
     const index = this.recordCache.records.findIndex(
@@ -163,7 +179,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Remove a record from the cache
    */
-  removeRecordFromCache(id) {
+  removeRecordFromCache(id: DnsRecord['id']): void {
     logger.trace(`DigitalOceanProvider.removeRecordFromCache: Removing record ID=${id} from cache`);
     
     const initialLength = this.recordCache.records.length;
@@ -178,7 +194,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * List DNS records with optional filtering
    */
-  async listRecords(params = {}) {
+  async listRecords(params: ListRecordsParams = {}): Promise<DnsRecord[]> {
     logger.trace(`DigitalOceanProvider.listRecords: Listing records with params: ${JSON.stringify(params)}`);
     
     try {
@@ -254,7 +270,7 @@ class DigitalOceanProvider extends DNSProvider {
    * Override the base method to handle DigitalOcean's @ symbol for apex domains
    * and trailing dots for domains
    */
-  findRecordInCache(type, name) {
+  findRecordInCache(type: string, name: string): DigitalOceanApiRecord | null | undefined {
     // First normalize the name to handle apex domain scenarios
     const domainPart = `.${this.domain}`;
     
@@ -305,7 +321,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Prepare record for creation by formatting it for DigitalOcean
    */
-  prepareRecordForCreation(record) {
+  prepareRecordForCreation(record: DnsRecordConfig): DnsRecordConfig {
     // Make a copy of the record to avoid modifying the original
     const recordData = { ...record };
     
@@ -333,7 +349,7 @@ class DigitalOceanProvider extends DNSProvider {
       `);
       
       // Make sure we have a valid IP
-      if (!recordData.content.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+      if (!recordData.content!.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
         logger.error(`Invalid IP address for apex domain A record: ${recordData.content}`);
         throw new Error(`Invalid IP address format for apex domain A record: ${recordData.content}`);
       }
@@ -345,7 +361,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Create a new DNS record
    */
-  async createRecord(record) {
+  async createRecord(record: DnsRecordConfig): Promise<DnsRecord> {
     logger.trace(`DigitalOceanProvider.createRecord: Creating record type=${record.type}, name=${record.name}, content=${record.content}`);
     
     try {
@@ -360,7 +376,7 @@ class DigitalOceanProvider extends DNSProvider {
       
       try {
         // Try searching by name and type directly from API
-        const response = await this.client.get(`/domains/${this.domain}/records`, {
+        const response = await this.client.get<DigitalOceanRecordsResponse>(`/domains/${this.domain}/records`, {
           params: { name: recordData.name, type: recordData.type }
         });
         
@@ -374,7 +390,7 @@ class DigitalOceanProvider extends DNSProvider {
           this.updateRecordInCache(existing);
           
           // Check if it needs to be updated
-          if (existing.data !== recordData.data || existing.ttl !== recordData.ttl) {
+          if (existing.data !== (recordData as DnsRecordConfig & { data?: string }).data || existing.ttl !== recordData.ttl) {
             logger.info(`Updating existing ${record.type} record for ${record.name}`);
             return await this.updateRecord(existing.id, record);
           }
@@ -397,7 +413,7 @@ class DigitalOceanProvider extends DNSProvider {
       logger.trace(`DigitalOceanProvider.createRecord: Sending create request to DigitalOcean API: ${JSON.stringify(doRecord)}`);
       
       try {
-        const response = await this.client.post(
+        const response = await this.client.post<DigitalOceanRecordResponse>(
           `/domains/${this.domain}/records`,
           doRecord
         );
@@ -435,7 +451,7 @@ class DigitalOceanProvider extends DNSProvider {
               
               // Try to find the existing record of any type for this name
               try {
-                const allRecordsResponse = await this.client.get(`/domains/${this.domain}/records`, {
+                const allRecordsResponse = await this.client.get<DigitalOceanRecordsResponse>(`/domains/${this.domain}/records`, {
                   params: { name: recordData.name }
                 });
                 
@@ -496,7 +512,7 @@ class DigitalOceanProvider extends DNSProvider {
                   
                   logger.debug(`Trying direct creation with: ${JSON.stringify(manualRecord)}`);
                   
-                  const response = await this.client.post(
+                  const response = await this.client.post<DigitalOceanRecordResponse>(
                     `/domains/${this.domain}/records`,
                     manualRecord
                   );
@@ -537,7 +553,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Update an existing DNS record
    */
-  async updateRecord(id, record) {
+  async updateRecord(id: DnsRecord['id'], record: DnsRecordConfig): Promise<DigitalOceanApiRecord> {
     logger.trace(`DigitalOceanProvider.updateRecord: Updating record ID=${id}, type=${record.type}, name=${record.name}, content=${record.content}`);
     
     try {
@@ -553,7 +569,7 @@ class DigitalOceanProvider extends DNSProvider {
       logger.trace(`DigitalOceanProvider.updateRecord: Sending update request to DigitalOcean API: ${JSON.stringify(doRecord)}`);
       
       try {
-        const response = await this.client.put(
+        const response = await this.client.put<DigitalOceanRecordResponse>(
           `/domains/${this.domain}/records/${id}`,
           doRecord
         );
@@ -595,7 +611,7 @@ class DigitalOceanProvider extends DNSProvider {
               doRecord.data = `${doRecord.data}.`;
               
               try {
-                const retryResponse = await this.client.put(
+                const retryResponse = await this.client.put<DigitalOceanRecordResponse>(
                   `/domains/${this.domain}/records/${id}`,
                   doRecord
                 );
@@ -633,7 +649,7 @@ class DigitalOceanProvider extends DNSProvider {
   /**
    * Delete a DNS record
    */
-  async deleteRecord(id) {
+  async deleteRecord(id: DnsRecord['id']): Promise<boolean> {
     logger.trace(`DigitalOceanProvider.deleteRecord: Deleting record ID=${id}`);
     
     try {
@@ -668,7 +684,7 @@ class DigitalOceanProvider extends DNSProvider {
  * Special handler for apex domain records
  * This is needed because DigitalOcean has specific requirements for apex domains
  */
-async handleApexDomain(record) {
+async handleApexDomain(record: DnsRecordConfig): Promise<DigitalOceanApiRecord> {
   logger.debug(`DigitalOceanProvider.handleApexDomain: Handling apex domain record: ${JSON.stringify(record)}`);
   
   if (record.type !== 'A' && record.type !== 'AAAA') {
@@ -688,7 +704,7 @@ async handleApexDomain(record) {
   
   try {
     // First try to get records directly from API to ensure fresh data
-    const response = await this.client.get(`/domains/${this.domain}/records`, {
+    const response = await this.client.get<DigitalOceanRecordsResponse>(`/domains/${this.domain}/records`, {
       params: { name: '@', type: record.type }
     });
     
@@ -726,7 +742,7 @@ async handleApexDomain(record) {
         logger.info(`Updating existing apex domain record (${record.type} for ${this.domain})`);
         
         try {
-          const response = await this.client.put(
+          const response = await this.client.put<DigitalOceanRecordResponse>(
             `/domains/${this.domain}/records/${existing.id}`,
             apexRecord
           );
@@ -765,7 +781,7 @@ async handleApexDomain(record) {
       logger.info(`Creating new apex domain record (${record.type} for ${this.domain})`);
       
       try {
-        const response = await this.client.post(
+        const response = await this.client.post<DigitalOceanRecordResponse>(
           `/domains/${this.domain}/records`,
           apexRecord
         );
@@ -799,7 +815,7 @@ async handleApexDomain(record) {
   /**
    * Batch process multiple DNS records at once
    */
-  async batchEnsureRecords(recordConfigs) {
+  async batchEnsureRecords(recordConfigs: DnsRecordConfig[]): Promise<DnsRecord[]> {
     if (!recordConfigs || recordConfigs.length === 0) {
       logger.trace('DigitalOceanProvider.batchEnsureRecords: No record configs provided, skipping');
       return [];
@@ -813,8 +829,8 @@ async handleApexDomain(record) {
       await this.getRecordsFromCache();
       
       // Process each record configuration
-      const results = [];
-      const pendingChanges = {
+      const results: DnsRecord[] = [];
+      const pendingChanges: PendingChanges = {
         create: [],
         update: [],
         unchanged: [],
@@ -1019,7 +1035,7 @@ async handleApexDomain(record) {
   /**
    * Check if a record needs to be updated
    */
-  recordNeedsUpdate(existing, newRecord) {
+  recordNeedsUpdate(existing: DigitalOceanApiRecord, newRecord: DnsRecordConfig): boolean {
     logger.trace(`DigitalOceanProvider.recordNeedsUpdate: Comparing records for ${newRecord.name}`);
     logger.trace(`DigitalOceanProvider.recordNeedsUpdate: Existing: ${JSON.stringify(existing)}`);
     logger.trace(`DigitalOceanProvider.recordNeedsUpdate: New: ${JSON.stringify(newRecord)}`);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DigitalOcean Provider module
  * Exports the DigitalOcean DNS provider implementation

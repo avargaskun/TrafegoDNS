@@ -20,11 +20,11 @@ export interface DnsRecord {
   content?: string;
   ttl?: number;
   proxied?: boolean;
-  priority?: number;
-  weight?: number;
-  port?: number;
-  flags?: number;
-  tag?: string;
+  priority?: number | null;
+  weight?: number | null;
+  port?: number | null;
+  flags?: number | null;
+  tag?: string | null;
   comment?: string;
 }
 

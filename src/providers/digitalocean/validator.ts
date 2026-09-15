@@ -1,15 +1,15 @@
-// @ts-nocheck
 /**
  * DigitalOcean-specific record validation utilities
  */
 import logger from '../../utils/logger';
+import type { DnsRecordConfig } from '../../../types/dns';
 
 /**
  * Validate a DigitalOcean DNS record configuration
  * @param {Object} record - The record to validate
  * @throws {Error} - If validation fails
  */
-function validateRecord(record) {
+function validateRecord(record: DnsRecordConfig): void {
   logger.trace(`digitalocean.validator: Validating record ${record.name} (${record.type})`);
   
   // Common validations
