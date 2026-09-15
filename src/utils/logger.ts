@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Logger utility for Traefik DNS Manager
  * Provides different log levels with appropriate formatting
@@ -14,9 +13,13 @@ const LOG_LEVELS = {
 };
 
 class Logger {
+  declare level: number;
+  declare levelNames: Record<number, string>;
+  declare symbols: { success: string; info: string; complete: string; error: string; warning: string };
+
   constructor() {
     // Default to INFO level unless specified in environment
-    this.level = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase()] ?? LOG_LEVELS.INFO;
+    this.level = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase() as keyof typeof LOG_LEVELS] ?? LOG_LEVELS.INFO;
     
     // Log level name mapping for debug/trace outputs
     this.levelNames = {
@@ -43,7 +46,7 @@ class Logger {
    * Format timestamp for logs
    * INFO level gets simplified timestamp, other levels get more detailed
    */
-  formatTimestamp(level) {
+  formatTimestamp(level: number): string {
     const now = new Date();
     
     if (level === LOG_LEVELS.INFO) {
@@ -58,7 +61,7 @@ class Logger {
   /**
    * Log a message if the current log level allows it
    */
-  log(level, message, symbol = null) {
+  log(level: number, message: string, symbol: string | null = null): void {
     if (level > this.level) return;
     
     let formattedMessage;
@@ -78,7 +81,7 @@ class Logger {
    * Format an object for trace logging
    * Handles circular references and limits depth
    */
-  formatObject(obj, depth = 0, maxDepth = 2) {
+  formatObject(obj: unknown, depth = 0, maxDepth = 2): string {
     if (depth > maxDepth) return '[Object]';
     
     try {
@@ -103,7 +106,7 @@ class Logger {
       if (depth === maxDepth) return `{${keys.length} props}`;
       
       const properties = keys.slice(0, 5).map(key => {
-        const value = this.formatObject(obj[key], depth + 1, maxDepth);
+        const value = this.formatObject((obj as Record<string, unknown>)[key], depth + 1, maxDepth);
         return `${key}: ${value}`;
       });
       
@@ -117,7 +120,7 @@ class Logger {
   /**
    * Trace log with object inspection support
    */
-  traceObject(message, obj) {
+  traceObject(message: string, obj: unknown): void {
     if (this.level < LOG_LEVELS.TRACE) return;
     
     const formattedObj = this.formatObject(obj);
@@ -125,43 +128,43 @@ class Logger {
   }
   
   // ERROR level - only critical errors that break functionality
-  error(message) {
+  error(message: string): void {
     this.log(LOG_LEVELS.ERROR, message, this.symbols.error);
   }
   
   // WARN level - important warnings that don't break functionality
-  warn(message) {
+  warn(message: string): void {
     this.log(LOG_LEVELS.WARN, message, this.symbols.warning);
   }
   
   // INFO level - key operational information
-  info(message) {
+  info(message: string): void {
     this.log(LOG_LEVELS.INFO, message, this.symbols.info);
   }
   
   // Success message - INFO level but with success symbol
-  success(message) {
+  success(message: string): void {
     this.log(LOG_LEVELS.INFO, message, this.symbols.success);
   }
   
   // Completion message - INFO level but with complete symbol
-  complete(message) {
+  complete(message: string): void {
     this.log(LOG_LEVELS.INFO, message, this.symbols.complete);
   }
   
   // DEBUG level - detailed information for troubleshooting
-  debug(message) {
+  debug(message: string): void {
     this.log(LOG_LEVELS.DEBUG, message);
   }
   
   // TRACE level - extremely detailed information
-  trace(message) {
+  trace(message: string): void {
     this.log(LOG_LEVELS.TRACE, message);
   }
   
   // Allow changing log level at runtime
-  setLevel(levelName) {
-    const newLevel = LOG_LEVELS[levelName?.toUpperCase()];
+  setLevel(levelName: string): boolean {
+    const newLevel = LOG_LEVELS[levelName?.toUpperCase() as keyof typeof LOG_LEVELS];
     if (newLevel !== undefined) {
       const oldLevel = this.level;
       this.level = newLevel;

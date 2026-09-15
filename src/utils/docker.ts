@@ -1,15 +1,16 @@
-// @ts-nocheck
 /**
  * Docker-related utility functions
  */
 import logger from './logger';
+import type Docker from 'dockerode';
+import type { LabelMap } from '../../types/docker';
 
 /**
  * Extract container name from Docker container
  * @param {Object} container - Docker container object
  * @returns {string} - Container name without leading slash
  */
-function getContainerName(container) {
+function getContainerName(container: Docker.ContainerInfo | null | undefined): string {
   if (!container || !container.Names || !container.Names.length) {
     return 'unknown';
   }
@@ -24,7 +25,7 @@ function getContainerName(container) {
  * @param {string} prefix - Label prefix to filter by (optional)
  * @returns {Object} - Object with filtered labels
  */
-function extractLabels(container, prefix = null) {
+function extractLabels(container: Docker.ContainerInfo | null | undefined, prefix: string | null = null): LabelMap {
   if (!container || !container.Labels) {
     return {};
   }
@@ -39,7 +40,7 @@ function extractLabels(container, prefix = null) {
   // Filter labels by prefix
   return Object.entries(labels)
     .filter(([key]) => key.startsWith(prefix))
-    .reduce((acc, [key, value]) => {
+    .reduce<LabelMap>((acc, [key, value]) => {
       acc[key] = value;
       return acc;
     }, {});
@@ -50,7 +51,7 @@ function extractLabels(container, prefix = null) {
  * @param {Object} container - Docker container object
  * @returns {boolean} - True if container is managed by Docker Compose
  */
-function isComposeManaged(container) {
+function isComposeManaged(container: Docker.ContainerInfo | null | undefined): container is Docker.ContainerInfo {
   if (!container || !container.Labels) {
     return false;
   }
@@ -64,7 +65,7 @@ function isComposeManaged(container) {
  * @param {Object} container - Docker container object
  * @returns {string|null} - Project name or null if not found
  */
-function getComposeProject(container) {
+function getComposeProject(container: Docker.ContainerInfo | null | undefined): string | null {
   if (!isComposeManaged(container)) {
     return null;
   }
@@ -77,7 +78,7 @@ function getComposeProject(container) {
  * @param {Object} container - Docker container object
  * @returns {string|null} - Service name or null if not found
  */
-function getComposeService(container) {
+function getComposeService(container: Docker.ContainerInfo | null | undefined): string | null {
   if (!isComposeManaged(container)) {
     return null;
   }

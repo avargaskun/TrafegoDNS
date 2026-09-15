@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Event type constants for application-wide events
  */
@@ -27,4 +26,4 @@ export default {
     // Status events
     STATUS_UPDATE: 'status:update',
     ERROR_OCCURRED: 'error:occurred'
-  };
+  } as const;

@@ -1,8 +1,9 @@
-// @ts-nocheck
 /**
  * Traefik-related utility functions
  */
 import logger from './logger';
+import type { ContainerLabelsCache, LabelMap } from '../../types/docker';
+import type { TraefikRouter } from '../../types/traefik';
 
 /**
  * Extract hostnames from a Traefik router rule
@@ -10,14 +11,14 @@ import logger from './logger';
  * @param {string} rule - Traefik router rule
  * @returns {Array<string>} - Array of extracted hostnames
  */
-function extractHostnamesFromRule(rule) {
+function extractHostnamesFromRule(rule: string): string[] {
   logger.trace(`traefik.extractHostnamesFromRule: Extracting hostnames from rule: ${rule}`);
   
-  const hostnames = [];
+  const hostnames: string[] = [];
   
   // Handle Traefik v2 format: Host(`example.com`)
   const v2HostRegex = /Host\(`([^`]+)`\)/g;
-  let match;
+  let match: RegExpExecArray | null;
   
   while ((match = v2HostRegex.exec(rule)) !== null) {
     logger.trace(`traefik.extractHostnamesFromRule: Found v2 hostname: ${match[1]}`);
@@ -43,9 +44,9 @@ function extractHostnamesFromRule(rule) {
  * @param {string} traefikLabelPrefix - Prefix for Traefik labels
  * @returns {Object} - Labels for the router
  */
-function findLabelsForRouter(router, containerLabelsCache, traefikLabelPrefix) {
+function findLabelsForRouter(router: TraefikRouter, containerLabelsCache: ContainerLabelsCache, traefikLabelPrefix: string): LabelMap {
   // Start with empty labels
-  const labels = {};
+  const labels: LabelMap = {};
   
   // Check if router has a related container
   const service = router.service;
@@ -72,7 +73,7 @@ function findLabelsForRouter(router, containerLabelsCache, traefikLabelPrefix) {
  * @param {Object} router - Traefik router object
  * @returns {string|null} - Service name or null if not found
  */
-function extractServiceName(router) {
+function extractServiceName(router: TraefikRouter | null | undefined): string | null {
   if (!router || !router.service) {
     return null;
   }

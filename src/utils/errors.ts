@@ -1,8 +1,7 @@
-// @ts-nocheck
 import logger from './logger';
 
 // Never render config, headers, request or response.data: AxiosErrors carry the API token there.
-function describeError(error) {
+function describeError(error: any): string {
   if (error === null || error === undefined) return String(error);
   if (typeof error !== 'object') return String(error);
   const parts = [error.message || error.name || 'Unknown error'];
@@ -12,8 +11,10 @@ function describeError(error) {
   return parts.join(' ');
 }
 
-function runGuarded(context, fn) {
-  const report = (err) => logger.error(`${context}: ${describeError(err)}`);
+function runGuarded<T>(context: string, fn: () => PromiseLike<T>): Promise<T | undefined>;
+function runGuarded<T>(context: string, fn: () => T): T | undefined;
+function runGuarded(context: string, fn: () => any) {
+  const report = (err: unknown) => logger.error(`${context}: ${describeError(err)}`);
   try {
     const result = fn();
     if (result && typeof result.then === 'function') return Promise.resolve(result).catch(report);

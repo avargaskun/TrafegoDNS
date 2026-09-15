@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Event Bus for application-wide event handling
  * Implements a simple pub/sub pattern for decoupled communication
@@ -7,8 +6,12 @@ import EventEmitter from 'events';
 import logger from '../utils/logger';
 import { runGuarded } from '../utils/errors';
 import EventTypes from './EventTypes';
+import type { EventHandler, EventName, EventPayloads, EventWithoutPayload } from '../../types/events';
 
 class EventBus {
+  declare emitter: EventEmitter;
+  declare subscriberCounts: Record<string, number>;
+
   constructor() {
     this.emitter = new EventEmitter();
     
@@ -29,12 +32,12 @@ class EventBus {
    * @param {string} eventType - Event type from EventTypes
    * @param {Function} handler - Event handler function
    */
-  subscribe(eventType, handler) {
+  subscribe<K extends EventName>(eventType: K, handler: EventHandler<K>): () => void {
     if (!Object.values(EventTypes).includes(eventType)) {
       logger.warn(`Subscribing to unknown event type: ${eventType}`);
     }
     
-    const wrapped = (data) => runGuarded(`Error in ${eventType} subscriber`, () => handler(data));
+    const wrapped = (data: EventPayloads[K]) => runGuarded(`Error in ${eventType} subscriber`, () => handler(data));
     this.emitter.on(eventType, wrapped);
     
     // Track subscriber counts
@@ -54,7 +57,9 @@ class EventBus {
    * @param {string} eventType - Event type from EventTypes
    * @param {Object} data - Event data
    */
-  publish(eventType, data = {}) {
+  publish<K extends EventName>(eventType: K, data: EventPayloads[K]): void;
+  publish(eventType: EventWithoutPayload): void;
+  publish(eventType: EventName, data: EventPayloads[EventName] = {}): void {
     if (!Object.values(EventTypes).includes(eventType)) {
       logger.warn(`Publishing unknown event type: ${eventType}`);
     }
@@ -71,7 +76,7 @@ class EventBus {
    * Setup debug logging of all events
    * Only active in TRACE log level
    */
-  setupDebugLogging() {
+  setupDebugLogging(): void {
     Object.values(EventTypes).forEach(eventType => {
       this.emitter.on(eventType, (data) => {
         logger.trace(`EVENT: ${eventType} - ${JSON.stringify(data)}`);

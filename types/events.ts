@@ -29,3 +29,9 @@ export interface EventPayloads {
 }
 
 export type EventHandler<K extends keyof EventPayloads> = (data: EventPayloads[K]) => void;
+
+export type EventWithoutPayload = { [K in EventName]: {} extends EventPayloads[K] ? K : never }[EventName];
+
+type Assert<T extends true> = T;
+
+type EventPayloadsMatchEventNames = Assert<[EventName] extends [keyof EventPayloads] ? ([keyof EventPayloads] extends [EventName] ? true : false) : false>;
