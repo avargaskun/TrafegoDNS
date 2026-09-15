@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Direct DNS Manager Service
  * Extracts hostnames directly from Docker container labels
@@ -7,9 +6,21 @@
 import logger from '../utils/logger';
 import EventTypes from '../events/EventTypes';
 import { getLabelValue } from '../utils/dns';
+import type ConfigManager from '../config/ConfigManager';
+import type { EventBus } from '../events/EventBus';
+import type DockerMonitor from './DockerMonitor';
+import type { ContainerLabelsCache, LabelMap } from '../../types/docker';
 
 class DirectDNSManager {
-  constructor(config, eventBus) {
+  declare config: ConfigManager;
+  declare eventBus: EventBus;
+  declare dockerMonitor: DockerMonitor | null;
+  declare isPolling: boolean;
+  declare pollTimer: NodeJS.Timeout | null;
+  declare previousStats: { hostnameCount: number };
+  declare lastDockerLabels: ContainerLabelsCache;
+
+  constructor(config: ConfigManager, eventBus: EventBus) {
     this.config = config;
     this.eventBus = eventBus;
     this.dockerMonitor = null;
@@ -29,7 +40,7 @@ class DirectDNSManager {
   /**
    * Set up event subscriptions
    */
-  setupEventSubscriptions() {
+  setupEventSubscriptions(): void {
     // Subscribe to Docker label updates
     this.eventBus.subscribe(EventTypes.DOCKER_LABELS_UPDATED, (data) => {
       const { containerLabelsCache, containerIdToName, hasChanges } = data;
@@ -50,7 +61,7 @@ class DirectDNSManager {
   /**
    * Initialize the Direct DNS Manager
    */
-  async init() {
+  async init(): Promise<boolean> {
     logger.debug('Initialising DirectDNSManager...');
     return true;
   }
@@ -58,7 +69,7 @@ class DirectDNSManager {
   /**
    * Start the polling process
    */
-  async startPolling() {
+  async startPolling(): Promise<boolean> {
     // Perform initial poll
     await this.pollContainers();
     
@@ -72,7 +83,7 @@ class DirectDNSManager {
   /**
    * Stop the polling process
    */
-  stopPolling() {
+  stopPolling(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -83,7 +94,7 @@ class DirectDNSManager {
   /**
    * Poll containers for DNS labels
    */
-  async pollContainers() {
+  async pollContainers(): Promise<void> {
     // Skip if already polling to prevent parallel execution
     if (this.isPolling) {
       logger.debug('Skipping poll - another poll cycle is already in progress');
@@ -144,9 +155,9 @@ class DirectDNSManager {
   /**
    * Extract hostnames from container labels
    */
-  extractHostnamesFromLabels(containerLabelsCache) {
-    const hostnames = [];
-    const containerLabels = {};
+  extractHostnamesFromLabels(containerLabelsCache: ContainerLabelsCache): { hostnames: string[]; containerLabels: Record<string, LabelMap> } {
+    const hostnames: string[] = [];
+    const containerLabels: Record<string, LabelMap> = {};
     
     // Get label prefix from existing config
     const dnsLabelPrefix = this.config.genericLabelPrefix;

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Status Reporter Service
  * Responsible for displaying application status and configuration
@@ -6,9 +5,17 @@
 import path from 'path';
 import logger from '../utils/logger';
 import EventTypes from '../events/EventTypes';
+import type ConfigManager from '../config/ConfigManager';
+import type { EventBus } from '../events/EventBus';
+import type RecordTracker from '../utils/recordTracker';
+import type { EventPayloads } from '../../types/events';
 
 class StatusReporter {
-  constructor(config, eventBus, recordTracker) {
+  declare config: ConfigManager;
+  declare eventBus: EventBus;
+  declare recordTracker: RecordTracker | undefined;
+
+  constructor(config: ConfigManager, eventBus: EventBus, recordTracker?: RecordTracker) {
     this.config = config;
     this.eventBus = eventBus;
     this.recordTracker = recordTracker;
@@ -20,7 +27,7 @@ class StatusReporter {
   /**
    * Set up event subscriptions
    */
-  setupEventSubscriptions() {
+  setupEventSubscriptions(): void {
     // Subscribe to status update events
     this.eventBus.subscribe(EventTypes.STATUS_UPDATE, (data) => {
       this.logStatus(data);
@@ -40,7 +47,7 @@ class StatusReporter {
   /**
    * Log application status
    */
-  logStatus(data) {
+  logStatus(data: EventPayloads['status:update']): void {
     const { message, type = 'info' } = data;
     
     switch (type) {
@@ -66,7 +73,7 @@ class StatusReporter {
   /**
    * Log application error
    */
-  logError(data) {
+  logError(data: EventPayloads['error:occurred']): void {
     const { source, error } = data;
     logger.error(`Error in ${source}: ${error}`);
   }
@@ -74,11 +81,11 @@ class StatusReporter {
   /**
    * Display configured settings in a visually appealing format
    */
-  async displaySettings() {
+  async displaySettings(): Promise<void> {
     try {
       // Get version from package.json
       const packageJsonPath = path.join(__dirname, '..', '..', 'package.json');
-      const packageJson = require(packageJsonPath);
+      const packageJson: { version?: string } = require(packageJsonPath);
       const version = packageJson.version || '1.0.0';
       
       console.log(''); // Empty line for better readability

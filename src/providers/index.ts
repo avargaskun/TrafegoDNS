@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DNS Providers index
  * Exports all provider-related components

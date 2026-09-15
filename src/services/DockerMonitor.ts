@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Docker Monitor Service
  * Responsible for monitoring Docker container events
@@ -12,6 +11,18 @@ import EventTypes from '../events/EventTypes';
 import { getLabelValue, extractDnsLabels } from '../utils/dns';
 import { describeError, runGuarded } from '../utils/errors';
 import { SingleFlight } from '../utils/singleFlight';
+import type ConfigManager from '../config/ConfigManager';
+import type { EventBus } from '../events/EventBus';
+import type {
+  ClassifiedEvent,
+  ContainerLabelsCache,
+  ContainerSummary,
+  DockerEventLike,
+  DockerMonitorOptions,
+  DockerMonitorTimings,
+  RefreshResult,
+  RefreshTrigger
+} from '../../types/docker';
 
 const DEFAULT_TIMINGS = Object.freeze({
   eventDebounceMs: 3000,
@@ -26,7 +37,7 @@ const DEFAULT_TIMINGS = Object.freeze({
 const HANDLED_ACTIONS = new Set(['start', 'stop', 'die', 'destroy', 'health_status: healthy']);
 const STOP_ACTIONS = new Set(['stop', 'die', 'destroy']);
 
-function computeBackoffDelay(attempt, { reconnectInitialMs, reconnectMaxMs }, random = Math.random) {
+function computeBackoffDelay(attempt: number, { reconnectInitialMs, reconnectMaxMs }: Pick<DockerMonitorTimings, 'reconnectInitialMs' | 'reconnectMaxMs'>, random: () => number = Math.random): number {
   const base = Math.min(reconnectMaxMs, reconnectInitialMs * 2 ** attempt);
   return Math.round(base / 2 + random() * (base / 2));
 }
@@ -34,10 +45,32 @@ function computeBackoffDelay(attempt, { reconnectInitialMs, reconnectMaxMs }, ra
 class DockerMonitor {
   static DEFAULT_TIMINGS = DEFAULT_TIMINGS;
 
-  static classifyEvent(event) {
+  declare config: ConfigManager;
+  declare eventBus: EventBus;
+  declare docker: Docker;
+  declare timings: DockerMonitorTimings;
+  declare random: () => number;
+  declare containerLabelsCache: ContainerLabelsCache;
+  declare containerIdToName: Map<string, string>;
+  declare containers: ContainerSummary[];
+  declare labelsLoadedAt: number | null;
+  declare refreshFailing: boolean;
+  declare refreshRunner: SingleFlight<[RefreshTrigger], RefreshResult>;
+  declare stopped: boolean;
+  declare generation: number;
+  declare stream: NodeJS.ReadableStream | null;
+  declare abortController: AbortController | null;
+  declare reconnectTimer: NodeJS.Timeout | null;
+  declare debounceTimer: NodeJS.Timeout | null;
+  declare firstEventAt: number;
+  declare reconnectAttempt: number;
+  declare streamOutage: { since: number; reason: string; attempts: number } | null;
+  declare connectedAt: number;
+
+  static classifyEvent(event: DockerEventLike | null | undefined): ClassifiedEvent | null {
     if (!event || event.Type !== 'container') return null;
     // `status` is the pre-1.52 field; API 1.52+ only sends `Action`.
-    const action = typeof event.Action === 'string' ? event.Action : event.status;
+    const action = (typeof event.Action === 'string' ? event.Action : event.status) as string;
     // Exact match: exec_* and other health states carry suffixes.
     if (!HANDLED_ACTIONS.has(action)) return null;
     return {
@@ -47,7 +80,7 @@ class DockerMonitor {
     };
   }
 
-  constructor(config, eventBus, options = {}) {
+  constructor(config: ConfigManager, eventBus: EventBus, options: DockerMonitorOptions = {}) {
     this.config = config;
     this.eventBus = eventBus;
     this.docker = options.docker ?? new Docker({ socketPath: config.dockerSocket });
@@ -80,7 +113,7 @@ class DockerMonitor {
   /**
    * Start watching Docker events; never rejects, retries in the background
    */
-  async startWatching() {
+  async startWatching(): Promise<void> {
     if (!this.stopped) return;
     this.stopped = false;
     this.streamOutage = null;
@@ -92,22 +125,22 @@ class DockerMonitor {
   /**
    * Stop watching Docker events
    */
-  stopWatching() {
+  stopWatching(): void {
     this.stopped = true;
     this.generation++;
-    clearTimeout(this.reconnectTimer);
-    clearTimeout(this.debounceTimer);
+    clearTimeout(this.reconnectTimer!);
+    clearTimeout(this.debounceTimer!);
     // A stale debounceTimer would make scheduleEventRefresh() return early after a restart.
     this.reconnectTimer = null;
     this.debounceTimer = null;
     this.abortController?.abort();
     this.abortController = null;
-    this.stream?.destroy();
+    (this.stream as (NodeJS.ReadableStream & { destroy(): void }) | null)?.destroy();
     this.stream = null;
     logger.debug('Docker event monitoring stopped');
   }
 
-  async connect(trigger) {
+  async connect(trigger: RefreshTrigger): Promise<void> {
     const gen = ++this.generation;
     const abortController = new AbortController();
     this.abortController = abortController;
@@ -116,7 +149,7 @@ class DockerMonitor {
       timedOut = true;
       abortController.abort();
     }, this.timings.connectTimeoutMs);
-    let source;
+    let source: NodeJS.ReadableStream;
     try {
       source = await this.getEvents({ filters: { type: ['container'] }, abortSignal: abortController.signal });
     } catch (error) {
@@ -127,7 +160,7 @@ class DockerMonitor {
     }
     clearTimeout(connectTimer);
     if (gen !== this.generation || this.stopped) {
-      source.destroy();
+      (source as NodeJS.ReadableStream & { destroy(): void }).destroy();
       return;
     }
 
@@ -154,7 +187,7 @@ class DockerMonitor {
     }
   }
 
-  handleStreamClosed(gen, error, { connected, trigger }) {
+  handleStreamClosed(gen: number, error: unknown, { connected, trigger }: { connected: boolean; trigger: RefreshTrigger }): void {
     if (gen !== this.generation || this.stopped) return;
     this.stream = null;
     if (connected && Date.now() - this.connectedAt >= this.timings.stableConnectionMs) {
@@ -176,7 +209,7 @@ class DockerMonitor {
     }, delay);
   }
 
-  handleEvent(value) {
+  handleEvent(value: DockerEventLike | null | undefined): void {
     const event = DockerMonitor.classifyEvent(value);
     if (!event) return;
     logger.info(`Docker event ${event.action} ${event.name}`);
@@ -189,7 +222,7 @@ class DockerMonitor {
     this.scheduleEventRefresh();
   }
 
-  scheduleEventRefresh() {
+  scheduleEventRefresh(): void {
     if (this.stopped) return;
     const now = Date.now();
     if (!this.debounceTimer) {
@@ -197,7 +230,7 @@ class DockerMonitor {
     } else if (now - this.firstEventAt >= this.timings.eventDebounceMaxMs) {
       return;
     }
-    clearTimeout(this.debounceTimer);
+    clearTimeout(this.debounceTimer!);
     const delay = Math.min(this.timings.eventDebounceMs, this.timings.eventDebounceMaxMs - (now - this.firstEventAt));
     this.debounceTimer = setTimeout(() => runGuarded('Docker event refresh', async () => {
       this.debounceTimer = null;
@@ -206,11 +239,11 @@ class DockerMonitor {
   }
   
   // Never rejects: resolves to { ok: true, containerCount, changed } or { ok: false, error }.
-  refreshLabels(trigger) {
+  refreshLabels(trigger: RefreshTrigger): Promise<RefreshResult> {
     return this.refreshRunner.run(trigger);
   }
 
-  async runRefresh(trigger) {
+  async runRefresh(trigger: RefreshTrigger): Promise<RefreshResult> {
     try {
       const list = await this.listContainers({
         all: false,
@@ -237,20 +270,20 @@ class DockerMonitor {
     }
   }
       
-  applyContainerList(containers, trigger) {
-    const newCache = {};
+  applyContainerList(containers: Docker.ContainerInfo[], trigger: RefreshTrigger): string[] {
+    const newCache: ContainerLabelsCache = {};
     const genericPrefix = this.config.genericLabelPrefix;
     const providerPrefix = this.config.dnsLabelPrefix;
       
     // New ID to name mapping
-    const containerIdToName = new Map();
+    const containerIdToName = new Map<string, string>();
       
     // For tracking changes - track IDs, names, and their relationships
-    const previousIds = new Set();        // Track previous container IDs
-    const previousNames = new Set();      // Track previous container names
-    const currentIds = new Set();         // Track current container IDs
-    const currentNames = new Set();       // Track current container names
-    const dnsLabelChanges = {};           // Track which containers had changes
+    const previousIds = new Set<string>();        // Track previous container IDs
+    const previousNames = new Set<string>();      // Track previous container names
+    const currentIds = new Set<string>();         // Track current container IDs
+    const currentNames = new Set<string>();       // Track current container names
+    const dnsLabelChanges: Record<string, boolean> = {};           // Track which containers had changes
 
     // Build maps of previous container relationships
     for (const key of Object.keys(this.containerLabelsCache)) {
@@ -386,7 +419,7 @@ class DockerMonitor {
     }
       
     // Deduplicate changes - prefer names over IDs
-    const uniqueChanges = new Set();
+    const uniqueChanges = new Set<string>();
         
     for (const item of Object.keys(dnsLabelChanges)) {
       // If it looks like a container ID
@@ -439,21 +472,21 @@ class DockerMonitor {
   /**
    * Get Docker events stream
    */
-  async getEvents(opts = { filters: { type: ['container'] } }) {
+  async getEvents(opts: Docker.GetEventsOptions = { filters: { type: ['container'] } }): Promise<NodeJS.ReadableStream> {
     return this.docker.getEvents(opts);
   }
   
   /**
    * List all running containers
    */
-  async listContainers(opts = { all: false }) {
+  async listContainers(opts: Docker.ContainerListOptions = { all: false }): Promise<Docker.ContainerInfo[]> {
     return this.docker.listContainers(opts);
   }
   
   /**
    * Get container details by ID
    */
-  async getContainer(id) {
+  async getContainer(id: string): Promise<Docker.ContainerInspectInfo> {
     try {
       const container = this.docker.getContainer(id);
       const details = await container.inspect();
@@ -464,32 +497,32 @@ class DockerMonitor {
     }
   }
   
-  getContainers() {
+  getContainers(): ContainerSummary[] {
     return this.containers;
   }
 
-  hasLoadedLabels() {
+  hasLoadedLabels(): boolean {
     return this.labelsLoadedAt !== null;
   }
 
   /**
    * Get the current container labels cache
    */
-  getContainerLabelsCache() {
+  getContainerLabelsCache(): ContainerLabelsCache {
     return this.containerLabelsCache;
   }
   
   /**
    * Get container name from ID if available
    */
-  getContainerName(id) {
+  getContainerName(id: string): string {
     return this.containerIdToName.get(id) || id;
   }
   
   /**
    * Test the connection to the Docker socket
    */
-  async testConnection() {
+  async testConnection(): Promise<boolean> {
     try {
       const info = await this.docker.info();
       return true;
