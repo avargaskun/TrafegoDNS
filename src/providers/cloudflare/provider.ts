@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Cloudflare DNS Provider
  * Core implementation of the DNSProvider interface for Cloudflare
@@ -8,12 +7,27 @@ import DNSProvider from '../base';
 import logger from '../../utils/logger';
 import { convertToCloudflareFormat } from './converter';
 import { validateRecord } from './validator';
+import type { AxiosInstance } from 'axios';
+import type ConfigManager from '../../config/ConfigManager';
+import type { DnsRecord, DnsRecordConfig, ListRecordsParams } from '../../../types/dns';
+import type { CloudflareApiRecord, CloudflareResponse, CloudflareZone } from '../../../types/providers';
 
 const RECORDS_PER_PAGE = 100;
 const MAX_RECORD_PAGES = 1000;
 
+interface PendingChanges {
+  create: { record: DnsRecordConfig }[];
+  update: { id: DnsRecord['id']; record: DnsRecordConfig; existing: DnsRecord }[];
+  unchanged: { record: DnsRecordConfig; existing: DnsRecord }[];
+}
+
 class CloudflareProvider extends DNSProvider {
-  constructor(config) {
+  declare token: string;
+  declare zone: string;
+  declare zoneId: string | null;
+  declare client: AxiosInstance;
+
+  constructor(config: ConfigManager) {
     super(config);
     
     logger.trace('CloudflareProvider.constructor: Initialising with config');
@@ -38,13 +52,13 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Initialize API by fetching zone ID
    */
-  async init() {
+  async init(): Promise<boolean> {
     logger.trace(`CloudflareProvider.init: Starting initialization for zone "${this.zone}"`);
     
     try {
       // Look up zone ID
       logger.trace('CloudflareProvider.init: Fetching zone ID from Cloudflare');
-      const response = await this.client.get('/zones', {
+      const response = await this.client.get<CloudflareResponse<CloudflareZone[]>>('/zones', {
         params: { name: this.zone }
       });
       
@@ -74,7 +88,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Refresh the DNS record cache
    */
-  async refreshRecordCache() {
+  async refreshRecordCache(): Promise<DnsRecord[] | undefined> {
     logger.trace('CloudflareProvider.refreshRecordCache: Starting cache refresh');
     
     try {
@@ -96,7 +110,7 @@ class CloudflareProvider extends DNSProvider {
           logger.debug(`Fetching additional DNS records page from Cloudflare (page ${page})`);
         }
         
-        const response = await this.client.get(`/zones/${this.zoneId}/dns_records`, {
+        const response = await this.client.get<CloudflareResponse<CloudflareApiRecord[]>>(`/zones/${this.zoneId}/dns_records`, {
           params: { per_page: RECORDS_PER_PAGE, page }
         });
         
@@ -140,7 +154,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Update a record in the cache
    */
-  updateRecordInCache(record) {
+  updateRecordInCache(record: DnsRecord): void {
     logger.trace(`CloudflareProvider.updateRecordInCache: Updating record in cache: ID=${record.id}, type=${record.type}, name=${record.name}`);
     
     const index = this.recordCache.records.findIndex(
@@ -159,7 +173,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Remove a record from the cache
    */
-  removeRecordFromCache(id) {
+  removeRecordFromCache(id: DnsRecord['id']): void {
     logger.trace(`CloudflareProvider.removeRecordFromCache: Removing record ID=${id} from cache`);
     
     const initialLength = this.recordCache.records.length;
@@ -174,7 +188,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * List DNS records with optional filtering
    */
-  async listRecords(params = {}) {
+  async listRecords(params: ListRecordsParams = {}): Promise<DnsRecord[]> {
     logger.trace(`CloudflareProvider.listRecords: Listing records with params: ${JSON.stringify(params)}`);
     
     try {
@@ -193,7 +207,7 @@ class CloudflareProvider extends DNSProvider {
         }
         
         logger.trace(`CloudflareProvider.listRecords: Directly querying Cloudflare API with filters`);
-        const response = await this.client.get(`/zones/${this.zoneId}/dns_records`, {
+        const response = await this.client.get<CloudflareResponse<CloudflareApiRecord[]>>(`/zones/${this.zoneId}/dns_records`, {
           params
         });
         
@@ -233,7 +247,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Create a new DNS record
    */
-  async createRecord(record) {
+  async createRecord(record: DnsRecordConfig): Promise<CloudflareApiRecord> {
     logger.trace(`CloudflareProvider.createRecord: Creating record type=${record.type}, name=${record.name}, content=${record.content}`);
     
     try {
@@ -256,7 +270,7 @@ class CloudflareProvider extends DNSProvider {
       
       logger.trace(`CloudflareProvider.createRecord: Sending create request to Cloudflare API: ${JSON.stringify(cloudflareRecord)}`);
       
-      const response = await this.client.post(
+      const response = await this.client.post<CloudflareResponse<CloudflareApiRecord>>(
         `/zones/${this.zoneId}/dns_records`,
         cloudflareRecord
       );
@@ -288,7 +302,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Update an existing DNS record
    */
-  async updateRecord(id, record) {
+  async updateRecord(id: DnsRecord['id'], record: DnsRecordConfig): Promise<CloudflareApiRecord> {
     logger.trace(`CloudflareProvider.updateRecord: Updating record ID=${id}, type=${record.type}, name=${record.name}, content=${record.content}`);
     
     try {
@@ -311,7 +325,7 @@ class CloudflareProvider extends DNSProvider {
       
       logger.trace(`CloudflareProvider.updateRecord: Sending update request to Cloudflare API: ${JSON.stringify(cloudflareRecord)}`);
       
-      const response = await this.client.put(
+      const response = await this.client.put<CloudflareResponse<CloudflareApiRecord>>(
         `/zones/${this.zoneId}/dns_records/${id}`,
         cloudflareRecord
       );
@@ -343,7 +357,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Delete a DNS record
    */
-  async deleteRecord(id) {
+  async deleteRecord(id: DnsRecord['id']): Promise<boolean> {
     logger.trace(`CloudflareProvider.deleteRecord: Deleting record ID=${id}`);
     
     try {
@@ -378,7 +392,7 @@ class CloudflareProvider extends DNSProvider {
   /**
    * Batch process multiple DNS records at once
    */
-  async batchEnsureRecords(recordConfigs) {
+  async batchEnsureRecords(recordConfigs: DnsRecordConfig[]): Promise<DnsRecord[]> {
     if (!recordConfigs || recordConfigs.length === 0) {
       logger.trace('CloudflareProvider.batchEnsureRecords: No record configs provided, skipping');
       return [];
@@ -392,8 +406,8 @@ class CloudflareProvider extends DNSProvider {
       await this.getRecordsFromCache();
       
       // Process each record configuration
-      const results = [];
-      const pendingChanges = {
+      const results: DnsRecord[] = [];
+      const pendingChanges: PendingChanges = {
         create: [],
         update: [],
         unchanged: []
@@ -531,7 +545,7 @@ class CloudflareProvider extends DNSProvider {
 /**
  * Check if a record needs to be updated
  */
-recordNeedsUpdate(existing, newRecord) {
+recordNeedsUpdate(existing: DnsRecord, newRecord: DnsRecordConfig): boolean {
     logger.trace(`CloudflareProvider.recordNeedsUpdate: Comparing records for ${newRecord.name}`);
     logger.trace(`CloudflareProvider.recordNeedsUpdate: Existing: ${JSON.stringify(existing)}`);
     logger.trace(`CloudflareProvider.recordNeedsUpdate: New: ${JSON.stringify(newRecord)}`);

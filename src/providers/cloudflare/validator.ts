@@ -1,15 +1,15 @@
-// @ts-nocheck
 /**
  * Cloudflare-specific record validation utilities
  */
 import logger from '../../utils/logger';
+import type { DnsRecordConfig } from '../../../types/dns';
 
 /**
  * Validate a Cloudflare DNS record configuration
  * @param {Object} record - The record to validate
  * @throws {Error} - If validation fails
  */
-function validateRecord(record) {
+function validateRecord(record: DnsRecordConfig): void {
   logger.trace(`cloudflare.validator: Validating record ${record.name} (${record.type})`);
   
   // Common validations

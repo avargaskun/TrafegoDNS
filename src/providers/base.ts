@@ -1,14 +1,19 @@
-// @ts-nocheck
 /**
  * Abstract DNS Provider Interface
  * Base class for all DNS provider implementations
  */
+import type ConfigManager from '../config/ConfigManager';
+import type { DnsRecord, DnsRecordConfig, ListRecordsParams, RecordCache } from '../../types/dns';
+
 class DNSProvider {
+  declare config: ConfigManager;
+  declare recordCache: RecordCache;
+
   /**
    * Constructor for the DNS provider
    * @param {Object} config - Configuration manager instance
    */
-  constructor(config) {
+  constructor(config: ConfigManager) {
     if (this.constructor === DNSProvider) {
       throw new Error('DNSProvider is an abstract class and cannot be instantiated directly');
     }
@@ -26,15 +31,15 @@ class DNSProvider {
    * Initialize the provider
    * @returns {Promise<boolean>} - True if initialization was successful
    */
-  async init() {
+  async init(): Promise<boolean> {
     throw new Error('Method init() must be implemented by subclass');
   }
-  
+
   /**
    * Refresh the DNS record cache
    * @returns {Promise<Array>} - Array of DNS records
    */
-  async refreshRecordCache() {
+  async refreshRecordCache(): Promise<DnsRecord[] | undefined> {
     throw new Error('Method refreshRecordCache() must be implemented by subclass');
   }
   
@@ -43,7 +48,7 @@ class DNSProvider {
    * @param {boolean} forceRefresh - Force refresh the cache
    * @returns {Promise<Array>} - Array of DNS records
    */
-  async getRecordsFromCache(forceRefresh = false) {
+  async getRecordsFromCache(forceRefresh: boolean = false): Promise<DnsRecord[]> {
     const cacheAge = Date.now() - this.recordCache.lastUpdated;
     const cacheRefreshInterval = this.config.cacheRefreshInterval;
     
@@ -61,7 +66,7 @@ class DNSProvider {
    * @param {string} name - Record name
    * @returns {Object|null} - The found record or null
    */
-  findRecordInCache(type, name) {
+  findRecordInCache(type: string, name: string): DnsRecord | undefined {
     return this.recordCache.records.find(
       record => record.type === type && record.name === name
     );
@@ -72,62 +77,62 @@ class DNSProvider {
    * @param {Object} params - Filter parameters
    * @returns {Promise<Array>} - Array of DNS records
    */
-  async listRecords(params = {}) {
+  async listRecords(params: ListRecordsParams = {}): Promise<DnsRecord[]> {
     throw new Error('Method listRecords() must be implemented by subclass');
   }
-  
+
   /**
    * Create a new DNS record
    * @param {Object} record - The record to create
    * @returns {Promise<Object>} - The created record
    */
-  async createRecord(record) {
+  async createRecord(record: DnsRecordConfig): Promise<DnsRecord> {
     throw new Error('Method createRecord() must be implemented by subclass');
   }
-  
+
   /**
    * Update an existing DNS record
    * @param {string} id - Record ID
    * @param {Object} record - The record data to update
    * @returns {Promise<Object>} - The updated record
    */
-  async updateRecord(id, record) {
+  async updateRecord(id: DnsRecord['id'], record: DnsRecordConfig): Promise<DnsRecord> {
     throw new Error('Method updateRecord() must be implemented by subclass');
   }
-  
+
   /**
    * Delete a DNS record
    * @param {string} id - Record ID
    * @returns {Promise<boolean>} - True if deletion was successful
    */
-  async deleteRecord(id) {
+  async deleteRecord(id: DnsRecord['id']): Promise<boolean> {
     throw new Error('Method deleteRecord() must be implemented by subclass');
   }
-  
+
   /**
    * Batch process multiple DNS records at once
    * @param {Array<Object>} recordConfigs - Array of record configurations
    * @returns {Promise<Array>} - Array of processed records
    */
-  async batchEnsureRecords(recordConfigs) {
+  async batchEnsureRecords(recordConfigs: DnsRecordConfig[]): Promise<DnsRecord[]> {
     throw new Error('Method batchEnsureRecords() must be implemented by subclass');
   }
-  
+
   /**
    * Check if a record needs to be updated
    * @param {Object} existing - The existing record
    * @param {Object} newRecord - The new record data
    * @returns {boolean} - True if the record needs to be updated
    */
-  recordNeedsUpdate(existing, newRecord) {
+  recordNeedsUpdate(existing: DnsRecord, newRecord: DnsRecordConfig): boolean {
     throw new Error('Method recordNeedsUpdate() must be implemented by subclass');
   }
-  
+
   /**
    * Validate a record configuration
    * @param {Object} record - The record to validate
    */
-  validateRecord(record) {
+  validateRecord(record: DnsRecordConfig): void {
     throw new Error('Method validateRecord() must be implemented by subclass');
   }
 }

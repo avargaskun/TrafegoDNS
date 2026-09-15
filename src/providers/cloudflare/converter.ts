@@ -1,20 +1,21 @@
-// @ts-nocheck
 /**
  * Cloudflare record format converter utilities
  * Handles conversion between internal format and Cloudflare API format
  */
 import logger from '../../utils/logger';
+import type { DnsRecord, DnsRecordConfig } from '../../../types/dns';
+import type { CloudflareApiRecord, CloudflareRecordPayload } from '../../../types/providers';
 
 /**
  * Convert standard record format to Cloudflare API format
  * @param {Object} record - Record in standard format
  * @returns {Object} - Record in Cloudflare format
  */
-function convertToCloudflareFormat(record) {
+function convertToCloudflareFormat(record: DnsRecordConfig): CloudflareRecordPayload {
   logger.trace(`cloudflare.converter: Converting record to Cloudflare format: ${JSON.stringify(record)}`);
   
   // Most fields map directly
-  const cloudflareRecord = {
+  const cloudflareRecord: CloudflareRecordPayload = {
     type: record.type,
     name: record.name,
     content: record.content,
@@ -69,11 +70,11 @@ function convertToCloudflareFormat(record) {
  * @param {Object} cloudflareRecord - Record in Cloudflare format
  * @returns {Object} - Record in standard format
  */
-function convertRecord(cloudflareRecord) {
+function convertRecord(cloudflareRecord: CloudflareApiRecord): DnsRecord {
   logger.trace(`cloudflare.converter: Converting from Cloudflare format: ${JSON.stringify(cloudflareRecord)}`);
   
   // Basic record format
-  const standardRecord = {
+  const standardRecord: DnsRecord = {
     id: cloudflareRecord.id,
     type: cloudflareRecord.type,
     name: cloudflareRecord.name,

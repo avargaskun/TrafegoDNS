@@ -28,6 +28,12 @@ export interface DnsRecord {
   comment?: string;
 }
 
+export interface ListRecordsParams {
+  type?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 export interface RecordCache {
   records: DnsRecord[];
   lastUpdated: number;

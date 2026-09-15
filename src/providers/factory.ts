@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DNS Provider Factory
  * Responsible for creating the appropriate DNS provider based on configuration
@@ -6,6 +5,8 @@
 import path from 'path';
 import fs from 'fs';
 import logger from '../utils/logger';
+import type ConfigManager from '../config/ConfigManager';
+import type DNSProvider from './base';
 
 class DNSProviderFactory {
   /**
@@ -13,14 +14,14 @@ class DNSProviderFactory {
    * @param {Object} config - Configuration manager instance
    * @returns {DNSProvider} - An instance of the configured DNS provider
    */
-  static createProvider(config) {
+  static createProvider(config: ConfigManager): DNSProvider {
     const providerType = config.dnsProvider || 'cloudflare';
     
     try {
       logger.debug(`Creating DNS provider: ${providerType}`);
       
       // Try to load the provider module
-      let ProviderClass;
+      let ProviderClass: any;
       
       try {
         // First try to load from provider folder (new structure)
@@ -65,13 +66,13 @@ class DNSProviderFactory {
    * Get a list of available DNS providers
    * @returns {Array<string>} - Array of available provider names
    */
-  static getAvailableProviders() {
+  static getAvailableProviders(): string[] {
     const providersDir = path.join(__dirname);
     
     try {
       // Read the providers directory
       const items = fs.readdirSync(providersDir);
-      const providers = [];
+      const providers: string[] = [];
       
       // Check both directories and .js files
       for (const item of items) {
