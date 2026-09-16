@@ -1,3 +1,22 @@
+import logger from '../utils/logger';
+
+const TRUE_VALUES = new Set(['true', '1', 'yes', 'on']);
+const FALSE_VALUES = new Set(['false', '0', 'no', 'off']);
+
+/** Returns undefined when the value is not a recognised boolean spelling. */
+function parseBoolean(value: string): boolean | undefined {
+  const normalised = value.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalised)) return true;
+  if (FALSE_VALUES.has(normalised)) return false;
+  return undefined;
+}
+
+/** A variable that is unset, empty or all whitespace is treated as not set at all. */
+function envValue(name: string): string | undefined {
+  const value = process.env[name];
+  return value === undefined || value.trim() === '' ? undefined : value;
+}
+
 /**
  * Environment variable loader
  * Handles loading and validating environment variables
@@ -68,22 +87,33 @@ class EnvironmentLoader {
      * Get environment variable as integer
      */
     static getInt(name: string, defaultValue: number = 0): number {
-      return this.get(name, defaultValue, (value) => {
-        const parsed = parseInt(value, 10);
-        if (isNaN(parsed)) {
-          throw new Error(`Expected an integer`);
-        }
-        return parsed;
-      });
+      const raw = envValue(name);
+      if (raw === undefined) {
+        return defaultValue;
+      }
+
+      const parsed = parseInt(raw, 10);
+      if (isNaN(parsed)) {
+        throw new Error(`Invalid format for environment variable ${name}: Expected an integer`);
+      }
+      return parsed;
     }
     
     /**
      * Get environment variable as boolean
      */
     static getBool(name: string, defaultValue: boolean = false): boolean {
-      return this.get(name, defaultValue, (value) => {
-        return value !== 'false';
-      });
+      const raw = envValue(name);
+      if (raw === undefined) {
+        return defaultValue;
+      }
+
+      const parsed = parseBoolean(raw);
+      if (parsed === undefined) {
+        logger.warn(`Ignoring ${name}="${raw}": expected true/false, 1/0, yes/no or on/off. Using ${defaultValue}.`);
+        return defaultValue;
+      }
+      return parsed;
     }
     
     /**
@@ -102,3 +132,4 @@ class EnvironmentLoader {
   }
   
   export default EnvironmentLoader;
+  export { parseBoolean };
