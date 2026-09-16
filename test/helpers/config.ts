@@ -2,7 +2,7 @@ import type ConfigManager from '../../src/config/ConfigManager';
 import type { TestConfig } from '../../types/test';
 
 /**
- * Plain config object for tests; stands in for ConfigManager, which must never be constructed in tests.
+ * Plain config object for tests; stands in for ConfigManager. To construct the real one, use `buildConfig` from `test/helpers/env.ts`.
  * @param {Partial<TestConfig> & Record<string, unknown>} [overrides={}] - Values that replace the defaults.
  * @returns {ConfigManager}
  */
@@ -13,6 +13,7 @@ function makeConfig(overrides: Partial<TestConfig> & Record<string, unknown> = {
     traefikLabelPrefix: 'traefik.',
     dnsProvider: 'cloudflare',
     defaultManage: false,
+    defaultProxied: true,
     cleanupOrphaned: false,
     cleanupGracePeriod: 15,
     watchDockerEvents: true,
