@@ -477,7 +477,7 @@ Each entry is `hostname:type:content:ttl:proxied`:
 - `type`: A, AAAA, CNAME, MX, TXT, …
 - `content`: the record value (IP for A, target for CNAME, …)
 - `ttl`: seconds
-- `proxied`: `true` or `false` (Cloudflare only)
+- `proxied`: `true`/`false`, `1`/`0`, `yes`/`no` or `on`/`off`, any case (Cloudflare only); omit it, or leave it blank, to use `DNS_DEFAULT_PROXIED` — an unrecognised value logs a warning and does the same
 
 ## Environment Variables
 
