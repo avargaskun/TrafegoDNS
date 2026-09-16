@@ -481,12 +481,14 @@ Each entry is `hostname:type:content:ttl:proxied`:
 
 ## Environment Variables
 
+Boolean variables accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`, in any case and with surrounding whitespace. An unrecognised value logs a warning and falls back to the documented default, and a blank value means "use the default". Before 1.11.0 only exact lower-case `true`/`false` was recognised, so a setting such as `DNS_DEFAULT_PROXIED=0` was read as `true`.
+
 ### Mode and provider
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPERATION_MODE` | `traefik` or `direct` | `traefik` |
-| `DNS_PROVIDER` | `cloudflare`, `digitalocean` or `route53` | `cloudflare` |
+| `OPERATION_MODE` | `traefik` or `direct` (case-insensitive) | `traefik` |
+| `DNS_PROVIDER` | `cloudflare`, `digitalocean` or `route53` (case-insensitive) | `cloudflare` |
 
 ### Provider credentials
 
