@@ -53,13 +53,13 @@ class ConfigManager {
     };
     
     // Operation mode - traefik or direct
-    this.operationMode = EnvironmentLoader.getString('OPERATION_MODE', 'traefik');
+    this.operationMode = EnvironmentLoader.getString('OPERATION_MODE', 'traefik').trim().toLowerCase() || 'traefik';
 
     // Managed Hostname management
     this.managedHostnames = EnvironmentLoader.getString('MANAGED_HOSTNAMES', '');    
 
     // DNS Provider configuration
-    this.dnsProvider = EnvironmentLoader.getString('DNS_PROVIDER', 'cloudflare');
+    this.dnsProvider = EnvironmentLoader.getString('DNS_PROVIDER', 'cloudflare').trim().toLowerCase() || 'cloudflare';
     
     // Provider-specific settings
     // Cloudflare settings
@@ -96,7 +96,7 @@ class ConfigManager {
     this.defaultProxied = EnvironmentLoader.getBool('DNS_DEFAULT_PROXIED', true);
     
     // Set default TTL based on the provider
-    switch (this.dnsProvider.toLowerCase()) {
+    switch (this.dnsProvider) {
       case 'cloudflare':
         this.defaultTTL = EnvironmentLoader.getInt('DNS_DEFAULT_TTL', 1); // Cloudflare minimum is 1 (Auto)
         break;
@@ -116,23 +116,17 @@ class ConfigManager {
     this.recordDefaults = {
       A: {
         content: '',  // Will be set after IP discovery
-        proxied: process.env.DNS_DEFAULT_A_PROXIED !== undefined ? 
-                 process.env.DNS_DEFAULT_A_PROXIED !== 'false' : 
-                 this.defaultProxied,
+        proxied: EnvironmentLoader.getBool('DNS_DEFAULT_A_PROXIED', this.defaultProxied),
         ttl: EnvironmentLoader.getInt('DNS_DEFAULT_A_TTL', this.defaultTTL)
       },
       AAAA: {
         content: '',  // Will be set after IP discovery
-        proxied: process.env.DNS_DEFAULT_AAAA_PROXIED !== undefined ? 
-                 process.env.DNS_DEFAULT_AAAA_PROXIED !== 'false' : 
-                 this.defaultProxied,
+        proxied: EnvironmentLoader.getBool('DNS_DEFAULT_AAAA_PROXIED', this.defaultProxied),
         ttl: EnvironmentLoader.getInt('DNS_DEFAULT_AAAA_TTL', this.defaultTTL)
       },
       CNAME: {
         content: EnvironmentLoader.getString('DNS_DEFAULT_CNAME_CONTENT', this.defaultContent || ''),
-        proxied: process.env.DNS_DEFAULT_CNAME_PROXIED !== undefined ? 
-                 process.env.DNS_DEFAULT_CNAME_PROXIED !== 'false' : 
-                 this.defaultProxied,
+        proxied: EnvironmentLoader.getBool('DNS_DEFAULT_CNAME_PROXIED', this.defaultProxied),
         ttl: EnvironmentLoader.getInt('DNS_DEFAULT_CNAME_TTL', this.defaultTTL)
       },
       MX: {
@@ -193,7 +187,7 @@ class ConfigManager {
    * Validate that required config is present for the selected provider
    */
   validateProviderConfig(): void {
-    switch (this.dnsProvider.toLowerCase()) {
+    switch (this.dnsProvider) {
       case 'cloudflare':
         if (!this.cloudflareToken) {
           throw new Error('CLOUDFLARE_TOKEN environment variable is required for Cloudflare provider');
@@ -235,7 +229,7 @@ class ConfigManager {
    * Get the main domain for the current provider
    */
   getProviderDomain(): string {
-    switch (this.dnsProvider.toLowerCase()) {
+    switch (this.dnsProvider) {
       case 'cloudflare':
         return this.cloudflareZone;
       case 'route53':
