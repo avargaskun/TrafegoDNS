@@ -21,3 +21,11 @@ test('an unknown provider fails with a message naming it', (t) => {
     /DNS provider 'nope' not found/
   );
 });
+
+test('a whitespace-only provider falls back to Cloudflare', (t) => {
+  captureLogs(t);
+
+  const provider = DNSProviderFactory.createProvider(makeConfig({ dnsProvider: '   ' }));
+
+  assert.equal(provider.constructor.name, 'CloudflareProvider');
+});
