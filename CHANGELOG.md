@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.4](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.3...v1.10.4) (2026-09-16)
+
+
+### Miscellaneous Chores
+
+* release 1.10.4 ([#20](https://github.com/avargaskun/TrafegoDNS/issues/20)) ([97fd34d](https://github.com/avargaskun/TrafegoDNS/commit/97fd34d0966372f625279937ae931b83e4c62cd0))
+
 ## [1.10.3](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.2...v1.10.3) (2026-09-13)
 
 
