@@ -70,6 +70,11 @@ test('a blank integer uses the declared default', () => {
   }
 });
 
+test('a blank string keeps the blank, not the default', () => {
+  const actual = withEnv({ TEST_STR: '' }, () => EnvironmentLoader.getString('TEST_STR', 'fallback'));
+  assert.equal(actual, '');
+});
+
 test('a non-integer still fails fast', () => {
   withEnv({ TEST_INT: 'abc' }, () => {
     assert.throws(
