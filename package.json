@@ -2,10 +2,14 @@
   "name": "TráfegoDNS",
   "version": "1.10.3",
   "description": "Automatically manage Cloudflare DNS records based on Traefik routing configuration",
-  "main": "src/app.js",
+  "main": "dist/src/app.js",
   "scripts": {
-    "start": "node src/app.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "start": "node dist/src/app.js",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "test:scripts": "npm run build && node --test \"dist/scripts/**/*.test.js\"",
+    "migration-check": "node dist/scripts/migration-check.js"
   },
   "author": "",
   "license": "MIT",
@@ -14,5 +18,12 @@
     "axios": "^1.8.4",
     "dockerode": "^4.0.6",
     "stream-json": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^4.0.1",
+    "@types/node": "24.10.1",
+    "@types/stream-json": "^1.7.8",
+    "acorn": "^8.18.0",
+    "typescript": "7.0.2"
   }
 }
