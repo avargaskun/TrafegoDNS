@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import logger from './logger';
+import { parseBoolean } from '../config/EnvironmentLoader';
 import type ConfigManager from '../config/ConfigManager';
 import type { DnsRecord, ManagedHostname, TrackedRecord } from '../../types/dns';
 
@@ -387,6 +388,23 @@ class RecordTracker {
   }
 
   /**
+   * Parse the proxied field of a managed hostname entry
+   * @param {string} hostname - Hostname the field belongs to, used for reporting
+   * @param {string} value - Raw field value, may be missing or blank
+   * @returns {boolean} - The parsed value, or the configured default
+   */
+  parseProxiedField(hostname: string, value: string | undefined): boolean {
+    if (value === undefined || value.trim() === '') return this.config.defaultProxied;
+
+    const parsed = parseBoolean(value);
+    if (parsed === undefined) {
+      logger.warn(`Ignoring proxied value "${value}" for managed hostname ${hostname}: expected true/false, 1/0, yes/no or on/off. Using ${this.config.defaultProxied}.`);
+      return this.config.defaultProxied;
+    }
+    return parsed;
+  }
+
+  /**
    * Load managed hostnames from environment variable
    */
   loadManagedHostnames(): void {
@@ -408,7 +426,7 @@ class RecordTracker {
             type: parts[1] || 'A',
             content: parts[2] || (parts[1] === 'CNAME' ? this.config.getProviderDomain() : this.config.getPublicIPSync()),
             ttl: parseInt(parts[3] || '3600', 10),
-            proxied: parts[4] ? parts[4].toLowerCase() === 'true' : this.config.defaultProxied
+            proxied: this.parseProxiedField(hostname, parts[4])
           };
         })
         .filter(config => config && config.hostname && config.hostname.length > 0) as ManagedHostname[];
