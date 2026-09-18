@@ -12,6 +12,7 @@ export interface TestConfig {
   traefikLabelPrefix: string;
   dnsProvider: string;
   defaultManage: boolean;
+  defaultProxied: boolean;
   cleanupOrphaned: boolean;
   cleanupGracePeriod: number;
   watchDockerEvents: boolean;

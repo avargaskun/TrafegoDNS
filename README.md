@@ -477,16 +477,18 @@ Each entry is `hostname:type:content:ttl:proxied`:
 - `type`: A, AAAA, CNAME, MX, TXT, …
 - `content`: the record value (IP for A, target for CNAME, …)
 - `ttl`: seconds
-- `proxied`: `true` or `false` (Cloudflare only)
+- `proxied`: `true`/`false`, `1`/`0`, `yes`/`no` or `on`/`off`, any case (Cloudflare only); omit it, or leave it blank, to use `DNS_DEFAULT_PROXIED` — an unrecognised value logs a warning and does the same
 
 ## Environment Variables
+
+Boolean variables accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`, in any case and with surrounding whitespace. An unrecognised value logs a warning and falls back to the documented default, and a blank value means "use the default". Before 1.11.0 only exact lower-case `true`/`false` was recognised, so a setting such as `DNS_DEFAULT_PROXIED=0` was read as `true`.
 
 ### Mode and provider
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPERATION_MODE` | `traefik` or `direct` | `traefik` |
-| `DNS_PROVIDER` | `cloudflare`, `digitalocean` or `route53` | `cloudflare` |
+| `OPERATION_MODE` | `traefik` or `direct` (case-insensitive) | `traefik` |
+| `DNS_PROVIDER` | `cloudflare`, `digitalocean` or `route53` (case-insensitive) | `cloudflare` |
 
 ### Provider credentials
 

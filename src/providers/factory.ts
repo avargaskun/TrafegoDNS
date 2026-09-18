@@ -15,7 +15,7 @@ class DNSProviderFactory {
    * @returns {DNSProvider} - An instance of the configured DNS provider
    */
   static createProvider(config: ConfigManager): DNSProvider {
-    const providerType = config.dnsProvider || 'cloudflare';
+    const providerType = String(config.dnsProvider ?? '').trim().toLowerCase() || 'cloudflare';
     
     try {
       logger.debug(`Creating DNS provider: ${providerType}`);
