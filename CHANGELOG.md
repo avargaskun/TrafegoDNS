@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.5](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.4...v1.10.5) (2026-09-18)
+
+
+### Bug Fixes
+
+* accept the documented boolean spellings and normalise DNS_PROVIDER ([#31](https://github.com/avargaskun/TrafegoDNS/issues/31)) ([cdaf084](https://github.com/avargaskun/TrafegoDNS/commit/cdaf084cf03096fc8c0803a2faee43a6728a788d))
+
 ## [1.10.4](https://github.com/avargaskun/TrafegoDNS/compare/v1.10.3...v1.10.4) (2026-09-16)
 
 
